@@ -1,0 +1,164 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+<meta charset="UTF-8" />
+<title>Subtítulos en vivo — Traducción</title>
+<style>
+  :root {
+    /* Defaults de fábrica (ver OVERLAY_STYLE_DEFAULTS en
+       config/user_config.py). El mensaje {"type": "style", ...} que manda
+       el servidor pisa estas variables apenas se conecta. Los valores
+       "translated_*" son los únicos que le importan a esta página — el
+       otro overlay (obs_overlay_original.html) usa los "original_*". */
+    --overlay-bottom: 40px;
+    --overlay-padding: 12px 24px;
+    --overlay-radius: 10px;
+    --overlay-bg: rgba(0, 0, 0, 0.55);
+    --text-font-family: "Segoe UI", Arial, sans-serif;
+    --text-font-size: 26px;
+    --text-color: #ffffff;
+    --text-weight: 700;
+    --text-width: 800px;
+    --text-height: 80px;
+  }
+  html, body {
+    margin: 0;
+    padding: 0;
+    background: transparent;
+    overflow: hidden;
+    height: 100%;
+  }
+  #subtitle-container {
+    position: fixed;
+    bottom: var(--overlay-bottom);
+    left: 0;
+    right: 0;
+    display: flex;
+    justify-content: center;
+    padding: 0 40px;
+  }
+  #subtitle-text {
+    /* box-sizing: border-box para que width/height sean el tamaño final
+       real del cuadro (padding incluido) — así coincide exactamente con
+       la zona reservada en el lienzo de OBS, sin que el padding la agrande. */
+    box-sizing: border-box;
+    width: var(--text-width);
+    height: var(--text-height);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    overflow: hidden;
+    background: var(--overlay-bg);
+    padding: var(--overlay-padding);
+    border-radius: var(--overlay-radius);
+    text-align: center;
+    text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6);
+    transition: opacity 0.2s ease-in-out;
+    font-family: var(--text-font-family);
+    font-size: var(--text-font-size);
+    color: var(--text-color);
+    font-weight: var(--text-weight);
+  }
+  /* Texto parcial (final: false): tentativo, todavía puede cambiar cuando
+     llegue la transcripción final de la misma frase. */
+  #subtitle-container.subtitle-partial #subtitle-text {
+    font-style: italic;
+    opacity: 0.7;
+  }
+  .subtitle-line-hidden {
+    display: none !important;
+  }
+</style>
+</head>
+<body>
+  <div id="subtitle-container">
+    <div id="subtitle-text"></div>
+  </div>
+
+  <script>
+    const WEBSOCKET_URL = "ws://localhost:8765";
+    const DEFAULT_SUBTITLE_CLEAR_DELAY_MS = 6000;
+
+    const subtitleContainerElement = document.getElementById("subtitle-container");
+    const subtitleTextElement = document.getElementById("subtitle-text");
+    let clearSubtitleTimeoutId = null;
+
+    // Actualizado por applyOverlayStyle() cuando llega un mensaje de estilo
+    // con clear_delay_ms; empieza en el mismo default de fábrica que usa
+    // config/user_config.py hasta que el servidor mande el valor real.
+    let subtitleClearDelayMs = DEFAULT_SUBTITLE_CLEAR_DELAY_MS;
+
+    function hexToRgba(hexColor, opacity) {
+      const hex = hexColor.replace("#", "");
+      const r = parseInt(hex.substring(0, 2), 16);
+      const g = parseInt(hex.substring(2, 4), 16);
+      const b = parseInt(hex.substring(4, 6), 16);
+      return `rgba(${r}, ${g}, ${b}, ${opacity})`;
+    }
+
+    // Aplica un mensaje {"type": "style", ...} (ver
+    // config/user_config.OVERLAY_STYLE_DEFAULTS) como variables CSS. Esta
+    // página solo usa las propiedades generales y las "translated_*" — las
+    // "original_*" del mismo mensaje se ignoran aquí a propósito.
+    function applyOverlayStyle(style) {
+      const root = document.documentElement.style;
+      root.setProperty("--overlay-bottom", `${style.bottom_offset_px}px`);
+      root.setProperty("--overlay-padding", `${style.padding_px}px ${style.padding_px * 2}px`);
+      root.setProperty("--overlay-radius", `${style.border_radius_px}px`);
+      root.setProperty("--overlay-bg", hexToRgba(style.background_color, style.background_opacity));
+
+      root.setProperty("--text-font-family", `"${style.translated_font_family}", sans-serif`);
+      root.setProperty("--text-font-size", `${style.translated_font_size_px}px`);
+      root.setProperty("--text-color", hexToRgba(style.translated_text_color, style.translated_text_opacity));
+      root.setProperty("--text-weight", style.translated_font_weight);
+      root.setProperty("--text-width", `${style.translated_width_px}px`);
+      root.setProperty("--text-height", `${style.translated_height_px}px`);
+
+      subtitleClearDelayMs = style.clear_delay_ms;
+    }
+
+    function connectToTranscriptionServer() {
+      const socket = new WebSocket(WEBSOCKET_URL);
+
+      socket.onmessage = (event) => {
+        const payload = JSON.parse(event.data);
+
+        if (payload.type === "style") {
+          applyOverlayStyle(payload);
+          return;
+        }
+
+        // displayMode viene del servidor (TRANSLATION_DISPLAY_MODE en
+        // config/settings.py): "original_only", "translation_only" o
+        // "both". Default defensivo a "original_only" si faltara el campo
+        // (en ese caso esta página se queda vacía, como corresponde).
+        const displayMode = payload.displayMode || "original_only";
+        const showTranslation =
+          (displayMode === "translation_only" || displayMode === "both") &&
+          !!payload.translated;
+
+        subtitleTextElement.textContent = showTranslation ? payload.translated : "";
+        subtitleTextElement.classList.toggle("subtitle-line-hidden", !showTranslation);
+
+        // payload.final === false -> texto tentativo, todavía puede
+        // reemplazarse por la versión final de la misma frase.
+        subtitleContainerElement.classList.toggle("subtitle-partial", payload.final === false);
+
+        clearTimeout(clearSubtitleTimeoutId);
+        clearSubtitleTimeoutId = setTimeout(() => {
+          subtitleTextElement.textContent = "";
+        }, subtitleClearDelayMs);
+      };
+
+      socket.onclose = () => {
+        console.warn("Conexión perdida con el servidor de transcripción, reintentando en 2s...");
+        setTimeout(connectToTranscriptionServer, 2000);
+      };
+
+      socket.onerror = () => socket.close();
+    }
+
+    connectToTranscriptionServer();
+  </script>
+</body>
+</html>

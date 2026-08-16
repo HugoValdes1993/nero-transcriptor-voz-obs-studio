@@ -1,0 +1,30 @@
+user_config.json
+__pycache__/
+
+# Variables de entorno / secretos
+.env
+.env.*
+*.pem
+*.key
+
+# Grabaciones de audio de debug (contienen voz real del usuario)
+debug_utterances/
+*.wav
+
+# Entornos virtuales
+venv/
+.venv/
+env/
+
+# Logs
+*.log
+logs/
+
+# Cache / bytecode Python
+*.pyc
+
+# Archivos de sistema/editor
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
