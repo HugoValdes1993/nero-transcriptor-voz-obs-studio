@@ -16,9 +16,12 @@
 #     alguien pushea un tag desde `develop` o una rama de feature por error.
 #   - workflow_dispatch (botón "Run workflow" en la pestaña Actions, o
 #     `gh workflow run release.yml`): corre el mismo build para probar que
-#     todo compila DESDE CUALQUIER RAMA (verify-tag se saltea, no aplica),
-#     pero el job `publish` no se ejecuta (ver su `if`) — así se puede
-#     validar el pipeline sin crear un release cada vez.
+#     todo compila (verify-tag se saltea, no aplica), pero solo si la rama
+#     elegida en el dropdown es `main` — el job `build` corta si no (ver su
+#     `if`), para no gastar minutos de CI compilando ramas de trabajo a
+#     medio terminar. El job `publish` tampoco se ejecuta en este disparador
+#     (ver su `if`) — así se puede validar el pipeline sin crear un release
+#     cada vez.
 #
 # Nada de esto necesita instalar nada en tu máquina: Inno Setup se instala
 # solo dentro del runner de GitHub (efímero, se descarta al terminar el job).
@@ -45,8 +48,9 @@ jobs:
     name: Verificar que el tag está en main
     runs-on: ubuntu-latest
     # Solo aplica a un push de tag — un workflow_dispatch no tiene tag que
-    # verificar, así que este job se saltea entero (build igual corre, ver
-    # su `if` más abajo) para poder probar el pipeline desde cualquier rama.
+    # verificar, así que este job se saltea entero (build decide por su
+    # cuenta si corresponde correr, ver su `if` más abajo, según la rama
+    # elegida en el dispatch).
     if: startsWith(github.ref, 'refs/tags/')
     steps:
       - uses: actions/checkout@v4
@@ -65,9 +69,15 @@ jobs:
   build:
     name: Build
     needs: verify-tag
-    # Corre si verify-tag pasó bien O si se saltó (workflow_dispatch, sin
-    # tag) — pero NO si verify-tag falló (tag fuera de main).
-    if: always() && needs.verify-tag.result != 'failure'
+    # Corre si:
+    #   - vino de un tag y verify-tag confirmó que está en main, o
+    #   - vino de un workflow_dispatch manual Y la rama elegida es `main`
+    #     (github.ref de un dispatch es refs/heads/<rama-elegida>).
+    # No corre para un dispatch manual desde develop/feature/lo-que-sea: eso
+    # gastaría minutos de CI compilando ramas que todavía no llegaron a main.
+    if: >
+      always() && needs.verify-tag.result != 'failure' &&
+      (startsWith(github.ref, 'refs/tags/') || github.ref == 'refs/heads/main')
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
