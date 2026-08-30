@@ -1,0 +1,36 @@
+# Corre la suite de tests unitarios (ver tests/) en cada push/PR a develop o
+# main — incluye los PRs que abre Dependabot (target-branch: develop, ver
+# .github/dependabot.yml), así queda una señal automática de si un bump de
+# dependencia rompió algo antes de mergearlo.
+#
+# windows-latest a propósito: el proyecto es Windows-only (usa winreg,
+# rutas de registro, GDI/DirectWrite vía Tkinter — ver src/gui/config_window.py)
+# y es el mismo runner que usa release.yml para compilar el .exe real, así
+# que los tests corren contra el mismo entorno que termina empaquetado.
+#
+# Autor: Nero
+
+name: Tests
+
+on:
+  push:
+    branches: [develop, main]
+  pull_request:
+    branches: [develop, main]
+
+jobs:
+  test:
+    name: Unit tests
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Ejecutar tests
+        run: python -m pytest -v

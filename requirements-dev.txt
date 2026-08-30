@@ -1,0 +1,6 @@
+# Dependencias SOLO para correr los tests (ver tests/) — no hacen falta para
+# correr la app ni para generar el .exe, por eso están separadas de
+# requirements.txt/requirements-build.txt.
+#
+# Instalar con: pip install -r requirements.txt -r requirements-dev.txt
+pytest>=8.0.0

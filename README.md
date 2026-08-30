@@ -55,7 +55,7 @@ completo y conecta unos con otros.
 
 ## Requisitos
 
-- Python 3.10+
+- Python 3.11+
 - Micrófono configurado como dispositivo de entrada del sistema
 - GPU NVIDIA (probado para 4-6 GB de VRAM) — opcional pero muy recomendada
   para velocidad; sin ella la transcripción corre en CPU, más lenta. Los
@@ -103,6 +103,20 @@ Para diagnosticar problemas de selección de micrófono:
 
 ```bash
 python scripts/list_audio_devices.py
+```
+
+## Tests
+
+Suite de tests unitarios (ver `tests/`) para la lógica que no depende de
+hardware real (audio, GPU) ni de una ventana abierta: filtros de texto,
+segmentación de utterances, persistencia de configuración, resolución de
+dispositivo de audio (con `sounddevice` mockeado) y el WebSocket del overlay.
+Corre automáticamente en cada push/PR a `develop`/`main` (ver
+`.github/workflows/tests.yml`), incluidos los PRs que abre Dependabot.
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
 ```
 
 ## Integración con OBS
