@@ -14,6 +14,7 @@ ASR lo garantiza), pero combinadas reducen su frecuencia drásticamente:
 """
 
 import numpy as np
+import faster_whisper
 from faster_whisper import WhisperModel
 
 from config.settings import (
@@ -30,6 +31,7 @@ from config.settings import (
 from config.user_config import get_whisper_device, get_whisper_source_language
 from src.speech.hallucination_filter import is_known_hallucination
 from src.logging_utils import ComponentLogger
+from src.status_hub import notify_status
 
 logger = ComponentLogger("Transcriber")
 
@@ -68,14 +70,44 @@ class SpeechTranscriber:
             )
             compute_type = "int8"
 
+        self._notify_model_loading(model_name)
         self.whisper_model = WhisperModel(
             model_name,
             device=device,
             compute_type=compute_type,
         )
+        # No hace falta un notify_status("") de "ya terminó" acá: hay dos
+        # instancias de SpeechTranscriber (final + parcial) y todavía falta
+        # que arranque la captura de audio — quien decide cuándo mostrar
+        # "Transcribiendo" de verdad es TranscriptionPipeline.run() a través
+        # de on_ready (ver PipelineController.start), no acá.
         self.beam_size = beam_size
         self.condition_on_previous_text = condition_on_previous_text
         self.apply_confidence_filters = apply_confidence_filters
+
+    @staticmethod
+    def _notify_model_loading(model_name: str):
+        """
+        Avisa a la GUI mientras se resuelve el modelo — puede tardar bastante
+        si hay que descargarlo de Hugging Face (de unos cientos de MB a
+        ~1.6GB para large-v3-turbo) en vez de cargarlo desde caché local.
+
+        download_model(local_files_only=True) no descarga nada: si el modelo
+        ya está en caché devuelve la ruta al toque; si no, tira una excepción
+        (el tipo exacto depende de la versión de huggingface_hub, por eso se
+        captura genérico) — con eso alcanza para distinguir "va a descargar"
+        de "ya lo tengo, esto es solo carga rápida".
+        """
+        try:
+            faster_whisper.download_model(model_name, local_files_only=True)
+            message = f"Cargando modelo de transcripción '{model_name}'..."
+        except Exception:
+            message = (
+                f"Descargando modelo de transcripción '{model_name}' "
+                f"(primera vez, puede tardar varios minutos)..."
+            )
+        logger.info(message)
+        notify_status(message)
 
     def transcribe_utterance(self, utterance_audio_float32: np.ndarray) -> str:
         """

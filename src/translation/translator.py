@@ -18,6 +18,7 @@ pipeline sin traducción sin que esto rompa nada.
 
 from config.user_config import get_whisper_source_language, get_translation_target_language
 from src.logging_utils import ComponentLogger
+from src.status_hub import notify_status
 
 logger = ComponentLogger("Translator")
 
@@ -63,27 +64,43 @@ def _ensure_translation_package_installed(source_language: str, target_language:
         f"{target_language} no encontrado localmente. "
         f"Descargando (requiere internet, solo la primera vez)..."
     )
-    argostranslate.package.update_package_index()
-    available_packages = argostranslate.package.get_available_packages()
-    matching_package = next(
-        (
-            pkg
-            for pkg in available_packages
-            if pkg.from_code == source_language
-            and pkg.to_code == target_language
-        ),
-        None,
-    )
-    if matching_package is None:
-        raise RuntimeError(
-            f"No existe un paquete de Argos Translate para "
-            f"{source_language} -> {target_language}. "
-            f"Revisa los códigos de idioma disponibles en "
-            f"https://www.argosopentech.com/argospm/index/"
+    # Este paso puede pasar bastante después de que la transcripción ya
+    # está "Escuchando micrófono" (se dispara recién con la primera frase
+    # que hay que traducir) — a diferencia de la carga del modelo de
+    # Whisper (ver SpeechTranscriber), acá SÍ hace falta el notify_status("")
+    # de "ya terminó" al final, para no dejar este mensaje pisando
+    # "Transcribiendo" para siempre. El try/finally lo asegura tanto si
+    # esto termina bien como si falla (paquete inexistente, sin internet,
+    # etc.) — hoy un fallo acá termina matando todo el pipeline igual (ver
+    # PipelineController._run), así que _reset_to_idle ya pisaría el
+    # mensaje con el error de todos modos, pero no vale la pena dejar este
+    # notify_status descalzado para el día que ese manejo de errores cambie.
+    notify_status(f"Descargando paquete de traducción {source_language} → {target_language}...")
+    try:
+        argostranslate.package.update_package_index()
+        available_packages = argostranslate.package.get_available_packages()
+        matching_package = next(
+            (
+                pkg
+                for pkg in available_packages
+                if pkg.from_code == source_language
+                and pkg.to_code == target_language
+            ),
+            None,
         )
+        if matching_package is None:
+            raise RuntimeError(
+                f"No existe un paquete de Argos Translate para "
+                f"{source_language} -> {target_language}. "
+                f"Revisa los códigos de idioma disponibles en "
+                f"https://www.argosopentech.com/argospm/index/"
+            )
 
-    argostranslate.package.install_from_path(matching_package.download())
-    logger.success(f"Paquete {source_language} -> {target_language} instalado.")
+        argostranslate.package.install_from_path(matching_package.download())
+        logger.success(f"Paquete {source_language} -> {target_language} instalado.")
+    finally:
+        notify_status("")
+
     _translation_package_ready_for_pair = requested_pair
 
 

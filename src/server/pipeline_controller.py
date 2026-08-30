@@ -63,11 +63,15 @@ class PipelineController:
     def stop_overlay_server(self):
         self._overlay_server.stop()
 
-    def start(self, on_stopped: Callable[[Optional[Exception]], None]):
+    def start(
+        self,
+        on_stopped: Callable[[Optional[Exception]], None],
+        on_ready: Optional[Callable[[], None]] = None,
+    ):
         if self.is_running:
             return
         self._stop_requested.clear()
-        self._thread = threading.Thread(target=self._run, args=(on_stopped,), daemon=True)
+        self._thread = threading.Thread(target=self._run, args=(on_stopped, on_ready), daemon=True)
         self._thread.start()
 
     def stop(self):
@@ -78,6 +82,22 @@ class PipelineController:
         self._stop_requested.set()
         if self._pipeline is not None:
             self._pipeline.request_stop()
+
+    def join(self, timeout: Optional[float] = None):
+        """
+        Bloquea hasta que el hilo de la transcripción termina de verdad (o
+        pasan `timeout` segundos) — a diferencia de stop(), que no espera.
+
+        Hace falta al cerrar la ventana (ver
+        ConfigWindow._on_close_requested), ANTES de llamar a
+        stop_overlay_server(): TranscriptionPipeline.run() todavía puede
+        estar programando un broadcast en el event loop del OverlayServer
+        (vía asyncio.run_coroutine_threadsafe) hasta que su hilo termina
+        de verdad; tirar abajo ese loop mientras tanto puede hacer que ese
+        broadcast falle contra un loop ya cerrado.
+        """
+        if self._thread is not None:
+            self._thread.join(timeout=timeout)
 
     def push_overlay_style(self, style: dict):
         """
@@ -104,10 +124,16 @@ class PipelineController:
             self._overlay_server.broadcaster.broadcast(original_text, translated_text, True, "both")
         )
 
-    def _run(self, on_stopped: Callable[[Optional[Exception]], None]):
+    def _run(
+        self,
+        on_stopped: Callable[[Optional[Exception]], None],
+        on_ready: Optional[Callable[[], None]],
+    ):
         error: Optional[Exception] = None
         try:
-            self._pipeline = TranscriptionPipeline(self._overlay_server.broadcaster, self._overlay_server.loop)
+            self._pipeline = TranscriptionPipeline(
+                self._overlay_server.broadcaster, self._overlay_server.loop, on_ready=on_ready
+            )
 
             # Si stop() se llamó mientras se cargaban los modelos (ver
             # comentario en __init__), el pedido queda guardado en

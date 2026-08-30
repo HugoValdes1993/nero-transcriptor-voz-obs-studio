@@ -18,6 +18,7 @@ Autor: Nero
 import asyncio
 import queue
 import threading
+from typing import Callable, Optional
 
 from config.settings import (
     PARTIAL_TRANSCRIPTION_ENABLED,
@@ -43,9 +44,21 @@ logger = ComponentLogger("Pipeline")
 
 
 class TranscriptionPipeline:
-    def __init__(self, broadcaster, event_loop: asyncio.AbstractEventLoop):
+    def __init__(
+        self,
+        broadcaster,
+        event_loop: asyncio.AbstractEventLoop,
+        on_ready: Optional[Callable[[], None]] = None,
+    ):
         self._broadcaster = broadcaster
         self._event_loop = event_loop
+        # Se llama una sola vez, apenas el micrófono ya está capturando de
+        # verdad (ver run()) — es la señal real de "esto ya está andando",
+        # en vez de que quien nos arrancó (PipelineController/ConfigWindow)
+        # tenga que adivinar con un timer fijo cuánto tardan en cargarse los
+        # modelos (que puede ser mucho más si hay que descargarlos la
+        # primera vez — ver SpeechTranscriber._notify_model_loading).
+        self._on_ready = on_ready
 
         self._audio_capture = AudioStreamCapture()
         self._voice_activity_detector = VoiceActivityDetector()
@@ -87,8 +100,21 @@ class TranscriptionPipeline:
         faster-whisper son bloqueantes) mientras el hilo principal atiende
         el servidor WebSocket.
         """
+        if self._stop_event.is_set():
+            # Se pidió detener (ej. se cerró la ventana) mientras todavía se
+            # estaban cargando/descargando los modelos en __init__ — eso
+            # puede tardar minutos la primera vez. Ni abrir el micrófono ni
+            # avisar on_ready tiene sentido acá: quien pidió detener ya
+            # puede estar esperando en join() (ver
+            # PipelineController.join / ConfigWindow._on_close_requested),
+            # o la ventana que recibiría on_ready ya ni existe.
+            logger.info("Transcripción cancelada antes de arrancar (se pidió detener durante la carga de modelos).")
+            return
+
         self._audio_capture.start()
         logger.success("Escuchando micrófono. Ctrl+C para detener.")
+        if self._on_ready is not None:
+            self._on_ready()
 
         try:
             while not self._stop_event.is_set():

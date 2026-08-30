@@ -65,6 +65,7 @@ from src.audio.mic_level_monitor import MicLevelMonitor
 from src.server.pipeline_controller import PipelineController
 from src.startup.app_paths import get_app_root
 from src.startup.cuda_availability import is_nvidia_gpu_available
+from src.status_hub import set_status_listener
 
 # Raíz de la app (repo en dev, carpeta del .exe empaquetado) — ver
 # src/startup/app_paths.get_app_root para el porqué de por qué no se calcula
@@ -395,11 +396,6 @@ class ConfigWindow(ctk.CTk):
     RUNNING_STATUS_COLOR = "#3fa54a"
     ERROR_STATUS_COLOR = "#e05252"
 
-    # Tiempo que se le da al pipeline para arrancar antes de asumir que ya
-    # está corriendo (no hay una señal explícita de "modelos cargados";
-    # los logs de consola siguen siendo la fuente de verdad detallada).
-    ASSUME_RUNNING_AFTER_MS = 1500
-
     MIC_TEST_START_TEXT = "🎤 Probar micrófono"
     MIC_TEST_STOP_TEXT = "Detener prueba"
 
@@ -430,6 +426,11 @@ class ConfigWindow(ctk.CTk):
         # mientras la transcripción está corriendo — así la vista previa de
         # estilos (ver _on_preview_toggled) funciona sin arrancar Whisper.
         self._pipeline_controller.start_overlay_server()
+
+        # Avisa en el status_label mientras se cargan/descargan modelos de
+        # Whisper o paquetes de Argos Translate — ver
+        # src/status_hub.py y _on_download_status.
+        set_status_listener(self._on_download_status)
 
         # Fuentes instaladas en el sistema operativo (no una lista fija de
         # fábrica): incluye cualquier fuente que el usuario haya cargado a
@@ -466,6 +467,15 @@ class ConfigWindow(ctk.CTk):
         # flag distingue "hay cambios sin guardar" para poder avisar antes
         # de cerrar la ventana y perderlos sin querer.
         self._has_unsaved_changes = False
+
+        # Se pone en True al principio de _on_close_requested — los
+        # callbacks que llegan desde el hilo de fondo del pipeline
+        # (_handle_pipeline_ready, _handle_pipeline_stopped,
+        # _on_download_status) lo chequean antes de tocar cualquier widget:
+        # si la descarga de un modelo tarda más que el timeout de
+        # PipelineController.join() en _on_close_requested, la ventana ya
+        # puede estar destruida para cuando ese hilo por fin termina.
+        self._is_closing = False
 
         self._build_layout()
         self.protocol("WM_DELETE_WINDOW", self._on_close_requested)
@@ -572,6 +582,16 @@ class ConfigWindow(ctk.CTk):
             child.destroy()
 
         self._populate_style_tabs()
+
+        # _build_preview_toggle siempre crea los botones habilitados — si la
+        # transcripción real está corriendo (el selector de presets no se
+        # deshabilita durante eso, a propósito, para poder cambiar de look
+        # en vivo), hay que volver a aplicarles el mismo "disabled" que les
+        # puso _request_start, o quedarían clickeables de nuevo y mandarían
+        # subtítulos de muestra mezclados con la transcripción real.
+        if self._pipeline_controller.is_running:
+            for button in self._preview_toggle_buttons:
+                button.configure(state="disabled")
 
     @staticmethod
     def _build_scrollable_tab_content(tab: ctk.CTkFrame) -> ctk.CTkScrollableFrame:
@@ -1561,11 +1581,28 @@ class ConfigWindow(ctk.CTk):
             button.configure(state="disabled")
 
         self.start_stop_button.configure(text=self.STARTING_BUTTON_TEXT, state="disabled")
-        self.status_label.configure(text="● Iniciando…", text_color=self.IDLE_STATUS_COLOR)
-        self._pipeline_controller.start(on_stopped=self._handle_pipeline_stopped)
-        self.after(self.ASSUME_RUNNING_AFTER_MS, self._mark_running_if_still_alive)
+        self.status_label.configure(
+            text="● Cargando modelos… (puede descargar la primera vez)",
+            text_color=self.IDLE_STATUS_COLOR,
+        )
+        self._pipeline_controller.start(
+            on_stopped=self._handle_pipeline_stopped, on_ready=self._handle_pipeline_ready
+        )
 
-    def _mark_running_if_still_alive(self):
+    def _handle_pipeline_ready(self):
+        """
+        Se llama desde el hilo de fondo del pipeline (ver
+        TranscriptionPipeline.run vía on_ready) justo cuando el micrófono ya
+        está capturando de verdad — los modelos ya terminaron de cargarse
+        (y de descargarse, si hacía falta). Antes esto se adivinaba con un
+        timer fijo (ASSUME_RUNNING_AFTER_MS) que quedaba corto si el primer
+        arranque tenía que descargar un modelo grande de Hugging Face.
+        """
+        if self._is_closing:
+            return
+        self.after(0, self._mark_running)
+
+    def _mark_running(self):
         # Si ya se detuvo (ej. falló al resolver el micrófono), el callback
         # on_stopped ya se encargó de resetear el botón — no pisarlo aquí.
         if not self._pipeline_controller.is_running:
@@ -1577,6 +1614,44 @@ class ConfigWindow(ctk.CTk):
         )
         self.status_label.configure(text="● Transcribiendo", text_color=self.RUNNING_STATUS_COLOR)
 
+    def _on_download_status(self, message: str):
+        """
+        Listener registrado en status_hub (ver __init__) — lo puede llamar
+        el hilo de fondo del pipeline (carga de modelos de Whisper,
+        instalación de paquetes de Argos Translate), nunca el hilo de la
+        GUI, así que hay que reencolar con after(0, ...) antes de tocar
+        cualquier widget de Tkinter.
+        """
+        if self._is_closing:
+            return
+        self.after(0, lambda: self._apply_download_status(message))
+
+    def _apply_download_status(self, message: str):
+        if message:
+            self.status_label.configure(text=f"● {message}", text_color=self.IDLE_STATUS_COLOR)
+            return
+
+        # "" = ya terminó lo que se estaba avisando (ver
+        # status_hub.notify_status) — se restaura "Transcribiendo" en vez de
+        # dejar el mensaje transitorio pisado para siempre. La carga de
+        # modelos de Whisper no manda este "ya terminó" (ver
+        # SpeechTranscriber._notify_model_loading): ahí quien restaura el
+        # estado correcto es _handle_pipeline_ready. Esto es para el caso de
+        # una descarga que puede pasar DESPUÉS, con la transcripción ya
+        # corriendo (ej. instalar un paquete de traducción nuevo).
+        #
+        # Se chequea el TEXTO del botón, no is_running: el hilo de fondo
+        # sigue vivo (is_running=True) durante toda la instalación del
+        # paquete, incluso después de que el usuario ya apretó "Detener" —
+        # si acá se restaurara "Transcribiendo" con solo mirar is_running,
+        # se pisaría el "Deteniendo…" que _request_stop ya puso, justo antes
+        # de que _reset_to_idle termine de poner "Detenido" un instante
+        # después. Solo hay que restaurar si de verdad seguimos en el
+        # estado "Transcribiendo" (nadie pidió detener ni cerrar mientras
+        # tanto).
+        if self.start_stop_button.cget("text") == self.RUNNING_BUTTON_TEXT:
+            self.status_label.configure(text="● Transcribiendo", text_color=self.RUNNING_STATUS_COLOR)
+
     def _request_stop(self):
         self.start_stop_button.configure(text=self.STOPPING_BUTTON_TEXT, state="disabled")
         self.status_label.configure(text="● Deteniendo…", text_color=self.IDLE_STATUS_COLOR)
@@ -1585,6 +1660,8 @@ class ConfigWindow(ctk.CTk):
     def _handle_pipeline_stopped(self, error: Exception | None):
         # Se llama desde el hilo de fondo del pipeline: hay que reencolar al
         # hilo de la GUI antes de tocar cualquier widget de Tkinter.
+        if self._is_closing:
+            return
         self.after(0, lambda: self._reset_to_idle(error))
 
     def _reset_to_idle(self, error: Exception | None):
@@ -1609,10 +1686,17 @@ class ConfigWindow(ctk.CTk):
         ):
             return
 
+        self._is_closing = True
         self._stop_all_previews()
+        set_status_listener(None)
         if self._mic_level_monitor.is_active:
             self._mic_level_monitor.stop()
         if self._pipeline_controller.is_running:
             self._pipeline_controller.stop()
+            # Espera a que el hilo de la transcripción termine de verdad
+            # ANTES de apagar el servidor del overlay — si no, el pipeline
+            # podría estar a mitad de programar un broadcast en un event
+            # loop que se está por cerrar (ver PipelineController.join).
+            self._pipeline_controller.join(timeout=5)
         self._pipeline_controller.stop_overlay_server()
         self.destroy()
