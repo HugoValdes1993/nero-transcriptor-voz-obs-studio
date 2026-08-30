@@ -5,7 +5,7 @@ la ventana de configuración (ver src/gui/config_window.py), que muestra el
 mensaje en su status_label (y una barra de progreso real cuando se conoce el
 avance en bytes, ver progress) mientras dura.
 
-Separado de logging_utils.py porque el propósito acá no es imprimir en
+Separado de logging_utils.py porque el propósito aquí no es imprimir en
 consola sino avisarle en vivo a la GUI — aunque en la práctica casi siempre
 se usa junto a un logger.info() con un mensaje parecido, para quien esté
 mirando la consola en vez de la ventana.
