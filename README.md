@@ -55,7 +55,7 @@ completo y conecta unos con otros.
 
 ## Requisitos
 
-- Python 3.10+
+- Python 3.11+
 - Micrófono configurado como dispositivo de entrada del sistema
 - GPU NVIDIA (probado para 4-6 GB de VRAM) — opcional pero muy recomendada
   para velocidad; sin ella la transcripción corre en CPU, más lenta. Los
