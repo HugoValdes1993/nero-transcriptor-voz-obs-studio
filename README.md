@@ -105,6 +105,20 @@ Para diagnosticar problemas de selección de micrófono:
 python scripts/list_audio_devices.py
 ```
 
+## Tests
+
+Suite de tests unitarios (ver `tests/`) para la lógica que no depende de
+hardware real (audio, GPU) ni de una ventana abierta: filtros de texto,
+segmentación de utterances, persistencia de configuración, resolución de
+dispositivo de audio (con `sounddevice` mockeado) y el WebSocket del overlay.
+Corre automáticamente en cada push/PR a `develop`/`main` (ver
+`.github/workflows/tests.yml`), incluidos los PRs que abre Dependabot.
+
+```bash
+pip install -r requirements-dev.txt
+python -m pytest
+```
+
 ## Integración con OBS
 
 El texto original y la traducción son **dos Browser Sources separadas**, para
