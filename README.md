@@ -261,6 +261,35 @@ git push origin v1.0.0
 También se puede disparar el mismo build sin crear un release (para probar
 que compila) desde la pestaña "Actions" de GitHub, con "Run workflow".
 
+## Flujo de trabajo (GitFlow)
+
+El repo sigue GitFlow, adaptado a `main` en vez de `master`:
+
+- **`main`**: solo código de release. Cada versión publicada tiene su tag
+  (`vX.Y.Z`) sobre un commit de `main` — nunca se tagea directo desde
+  `develop` ni desde una rama de feature. El pipeline de release
+  (`.github/workflows/release.yml`) tiene un job `verify-tag` que corta el
+  build si el tag no es ancestro de `origin/main`, para que esto no dependa
+  de acordarse hacerlo bien a mano.
+- **`develop`**: rama de integración, donde se juntan las features
+  terminadas antes de preparar una release.
+- **`feature/<nombre>`**: sale de `develop`, vuelve a `develop` (merge o PR).
+- **`release/<version>`**: sale de `develop` cuando se arma una versión
+  (ajustes finales, changelog); se mergea a `main` (y de ahí se tagea) Y de
+  vuelta a `develop`.
+- **`hotfix/<nombre>`**: sale de `main` para un arreglo urgente sobre una
+  versión ya publicada; se mergea a `main` (nuevo tag de patch) Y a
+  `develop`.
+
+Publicar una versión nueva, en resumen:
+
+```bash
+git checkout main
+git merge --no-ff release/1.1.0   # o hotfix/lo-que-sea
+git tag v1.1.0
+git push origin main --tags
+```
+
 ## Próximos pasos (no incluidos todavía)
 
 - Persistencia de subtítulos en archivo `.srt` para VOD.

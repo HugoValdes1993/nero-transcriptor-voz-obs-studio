@@ -9,11 +9,16 @@
 #
 # Disparadores:
 #   - push de un tag "v*.*.*" (ej. v1.0.0): build completo + PUBLICA el
-#     release de verdad (como draft, ver el último paso).
+#     release de verdad (como draft, ver el último paso). Con GitFlow (ver
+#     README, sección "Flujo de trabajo"), los tags de versión SOLO se crean
+#     sobre `main` — el job `verify-tag` chequea esto (el tag tiene que ser
+#     ancestro de origin/main) y corta el pipeline antes de compilar nada si
+#     alguien pushea un tag desde `develop` o una rama de feature por error.
 #   - workflow_dispatch (botón "Run workflow" en la pestaña Actions, o
 #     `gh workflow run release.yml`): corre el mismo build para probar que
-#     todo compila, pero el job `publish` no se ejecuta (ver su `if`) — así
-#     se puede validar el pipeline sin crear un release cada vez.
+#     todo compila DESDE CUALQUIER RAMA (verify-tag se saltea, no aplica),
+#     pero el job `publish` no se ejecuta (ver su `if`) — así se puede
+#     validar el pipeline sin crear un release cada vez.
 #
 # Nada de esto necesita instalar nada en tu máquina: Inno Setup se instala
 # solo dentro del runner de GitHub (efímero, se descarta al terminar el job).
@@ -36,8 +41,33 @@ permissions:
   contents: write
 
 jobs:
+  verify-tag:
+    name: Verificar que el tag está en main
+    runs-on: ubuntu-latest
+    # Solo aplica a un push de tag — un workflow_dispatch no tiene tag que
+    # verificar, así que este job se saltea entero (build igual corre, ver
+    # su `if` más abajo) para poder probar el pipeline desde cualquier rama.
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Confirmar que el tag es un ancestro de origin/main
+        shell: bash
+        run: |
+          git fetch origin main --quiet
+          if ! git merge-base --is-ancestor "${{ github.sha }}" origin/main; then
+            echo "::error::El tag '${{ github.ref_name }}' no está en la rama main — este pipeline (GitFlow, ver README) solo publica releases desde main. Fusioná primero la rama de release/hotfix a main y volvé a taguear ahí."
+            exit 1
+          fi
+
   build:
     name: Build
+    needs: verify-tag
+    # Corre si verify-tag pasó bien O si se saltó (workflow_dispatch, sin
+    # tag) — pero NO si verify-tag falló (tag fuera de main).
+    if: always() && needs.verify-tag.result != 'failure'
     runs-on: windows-latest
     steps:
       - uses: actions/checkout@v4
