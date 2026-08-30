@@ -60,9 +60,9 @@ completo y conecta unos con otros.
 - GPU NVIDIA (probado para 4-6 GB de VRAM) — opcional pero muy recomendada
   para velocidad; sin ella la transcripción corre en CPU, más lenta. Los
   drivers de CUDA (cuBLAS/cuDNN, ~1.3GB) NO hace falta instalarlos a mano: la
-  app los descarga sola la primera vez que activás "Usar aceleración CUDA"
+  app los descarga sola la primera vez que se activa "Usar aceleración CUDA"
   en la ventana de configuración (ver `src/startup/cuda_runtime_downloader.py`)
-  — solo necesitás tener instalado el driver normal de NVIDIA.
+  — solo hace falta tener instalado el driver normal de NVIDIA.
 
 ## Instalación
 
@@ -114,8 +114,8 @@ pegadas una debajo de la otra.
 
 1. Agrega una fuente **Browser Source** (Fuente de navegador) y, en "Local
    file", selecciona `overlay/obs_overlay_original.html` de este proyecto.
-2. Repetí el paso anterior con `overlay/obs_overlay_translated.html` para una
-   segunda fuente (podés omitir este paso si no usás traducción).
+2. Repite el paso anterior con `overlay/obs_overlay_translated.html` para una
+   segunda fuente (puedes omitir este paso si no usas traducción).
 3. Ajusta ancho/alto/posición de cada fuente por separado según tu escena.
 4. Con `python main.py` corriendo, los subtítulos aparecerán automáticamente
    sobre la escena, cada línea en su propia fuente. Estas fuentes se
@@ -139,10 +139,11 @@ Desde las pestañas "Estilos texto original" / "Estilos texto traducido" de la
 ventana de configuración, además de tipografía/color/tamaño:
 
 - **Presets de estilo**: un selector con 4 looks de fábrica ("Clásico", "Alto
-  contraste", "Minimalista sin fondo", "Neón") más los que vos guardes con
-  "💾 Guardar como preset...". Aplicar un preset pisa de una el fondo general
-  y la tipografía de los dos textos (original y traducido); "🗑 Eliminar
-  preset" borra los tuyos — los de fábrica no se pueden pisar ni eliminar.
+  contraste", "Minimalista sin fondo", "Neón") más los que guardes con
+  "💾 Guardar como preset...". Aplicar un preset sobrescribe de inmediato el
+  fondo general y la tipografía de los dos textos (original y traducido);
+  "🗑 Eliminar preset" borra los tuyos — los de fábrica no se pueden pisar ni
+  eliminar.
 - **Contorno de texto**: color y ancho (0-6px) independientes por línea, útil
   para mantener legibilidad sobre fondos claros o con `background_opacity`
   en 0.
@@ -150,7 +151,7 @@ ventana de configuración, además de tipografía/color/tamaño:
   "Fade", "Bounce" o "Glitch" (saltos de posición/color que se asientan en el
   texto normal) — se elige por separado para el texto original y el
   traducido, y solo se dispara con el texto FINAL de cada frase; el texto
-  tentativo mientras seguís hablando nunca anima.
+  tentativo mientras sigues hablando nunca anima.
 - **Vista previa en vivo**: el botón "👁 Vista previa" de cada pestaña abre
   ese overlay en tu navegador y le manda texto de muestra, sin necesidad de
   tener la transcripción corriendo ni el micrófono activo — el servidor
@@ -236,7 +237,7 @@ El resultado queda en `dist/VoiceTranscriber/` — esa carpeta COMPLETA es lo
 que se distribuye, no solo el `.exe` suelto. `user_config.json` y los dos
 overlays (`overlay/*.html`, para pegar en OBS como "Local file") quedan al
 lado del `.exe` dentro de esa misma carpeta, y son estables entre sesiones —
-por eso el build es "onedir" y no "onefile". Las DLLs de CUDA NO están acá
+por eso el build es "onedir" y no "onefile". Las DLLs de CUDA NO están aquí
 (ver "Requisitos" arriba): por eso este build pesa una fracción de lo que
 pesaría con ellas adentro.
 

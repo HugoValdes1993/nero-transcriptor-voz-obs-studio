@@ -64,7 +64,7 @@ class TranscriptionPipeline:
 
         # Las DLLs de CUDA se descargan bajo demanda (~1.3GB, ver
         # src/startup/cuda_runtime_downloader.py) — se resuelve UNA sola vez
-        # acá, antes de instanciar cualquier SpeechTranscriber (hay dos: final
+        # aquí, antes de instanciar cualquier SpeechTranscriber (hay dos: final
         # y parcial, y ambos leerían "cuda" del mismo get_whisper_device()).
         if get_whisper_device() == "cuda":
             ensure_cuda_runtime_downloaded_and_registered()
@@ -113,7 +113,7 @@ class TranscriptionPipeline:
             # Se pidió detener (ej. se cerró la ventana) mientras todavía se
             # estaban cargando/descargando los modelos en __init__ — eso
             # puede tardar minutos la primera vez. Ni abrir el micrófono ni
-            # avisar on_ready tiene sentido acá: quien pidió detener ya
+            # avisar on_ready tiene sentido aquí: quien pidió detener ya
             # puede estar esperando en join() (ver
             # PipelineController.join / ConfigWindow._on_close_requested),
             # o la ventana que recibiría on_ready ya ni existe.

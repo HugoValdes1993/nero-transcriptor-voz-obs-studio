@@ -29,7 +29,7 @@ Decisiones que no son obvias mirando el resultado:
   información al streamer, no soluciona nada.
 
 - Las DLLs de CUDA (nvidia-cublas-cu12/nvidia-cudnn-cu12/etc.) NO se
-  empaquetan acá — pesan ~1.3GB y se descargan bajo demanda en
+  empaquetan aquí — pesan ~1.3GB y se descargan bajo demanda en
   %LOCALAPPDATA% la primera vez que se activa aceleración CUDA (ver
   src/startup/cuda_runtime_downloader.py). Por eso no hace falta ningún
   hiddenimports/collect_all relacionado con "nvidia": ese paquete

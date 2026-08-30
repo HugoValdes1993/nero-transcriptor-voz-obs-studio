@@ -69,7 +69,7 @@ from src.status_hub import set_status_listener
 
 # Raíz de la app (repo en dev, carpeta del .exe empaquetado) — ver
 # src/startup/app_paths.get_app_root para el porqué de por qué no se calcula
-# acá mismo con __file__.
+# aquí mismo con __file__.
 _PROJECT_ROOT = get_app_root()
 
 
@@ -436,7 +436,7 @@ class ConfigWindow(ctk.CTk):
         # fábrica): incluye cualquier fuente que el usuario haya cargado a
         # mano en Windows, porque el Browser Source de OBS es Chromium (CEF)
         # y en Windows resuelve font-family contra las mismas fuentes que ve
-        # Tk acá (GDI/DirectWrite) — lo que aparece en este selector se va a
+        # Tk aquí (GDI/DirectWrite) — lo que aparece en este selector se va a
         # poder aplicar en el overlay. Se calcula una sola vez porque las dos
         # pestañas de estilo (original/traducido) comparten el mismo listado.
         self._system_font_families = self._get_system_font_families()
@@ -914,7 +914,7 @@ class ConfigWindow(ctk.CTk):
         Selector de fuente para ESTE overlay (original o traducido — cada
         pestaña llama a este método con su propio style_key, así que hay un
         selector independiente por pestaña). Ver _FontFamilyPicker para el
-        motivo de no usar CTkComboBox acá.
+        motivo de no usar CTkComboBox aquí.
         """
         current_value = self._overlay_style[style_key]
         all_fonts = self._system_font_families
@@ -1655,7 +1655,7 @@ class ConfigWindow(ctk.CTk):
         # Se chequea el TEXTO del botón, no is_running: el hilo de fondo
         # sigue vivo (is_running=True) durante toda la instalación del
         # paquete, incluso después de que el usuario ya apretó "Detener" —
-        # si acá se restaurara "Transcribiendo" con solo mirar is_running,
+        # si aquí se restaurara "Transcribiendo" con solo mirar is_running,
         # se pisaría el "Deteniendo…" que _request_stop ya puso, justo antes
         # de que _reset_to_idle termine de poner "Detenido" un instante
         # después. Solo hay que restaurar si de verdad seguimos en el

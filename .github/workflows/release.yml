@@ -58,7 +58,7 @@ jobs:
         run: |
           git fetch origin main --quiet
           if ! git merge-base --is-ancestor "${{ github.sha }}" origin/main; then
-            echo "::error::El tag '${{ github.ref_name }}' no está en la rama main — este pipeline (GitFlow, ver README) solo publica releases desde main. Fusioná primero la rama de release/hotfix a main y volvé a taguear ahí."
+            echo "::error::El tag '${{ github.ref_name }}' no está en la rama main — este pipeline (GitFlow, ver README) solo publica releases desde main. Fusiona primero la rama de release/hotfix a main y vuelve a taguear ahí."
             exit 1
           fi
 
@@ -93,7 +93,7 @@ jobs:
       - name: Empaquetar con PyInstaller
         run: pyinstaller build.spec --clean
 
-      # TODO (SignPath): una vez aprobada la aplicación, firmar acá
+      # TODO (SignPath): una vez aprobada la aplicación, firmar aquí
       # dist\VoiceTranscriber\VoiceTranscriber.exe ANTES de que Inno Setup lo
       # empaquete — ver signpath/github-action-submit-signing-request.
 
@@ -107,7 +107,7 @@ jobs:
         shell: pwsh
         run: iscc installer\voice_transcriber.iss "/DAppVersion=$env:APP_VERSION"
 
-      # TODO (SignPath): firmar acá installer\Output\VoiceTranscriberSetup.exe
+      # TODO (SignPath): firmar aquí installer\Output\VoiceTranscriberSetup.exe
       # (el Setup.exe ya armado), después de compilarlo y antes de subirlo.
 
       - name: Calcular checksum
@@ -142,7 +142,7 @@ jobs:
             ## Voice Transcriber ${{ github.ref_name }}
 
             `VoiceTranscriberSetup.exe` — instalador único, funciona con o sin
-            GPU NVIDIA. Si activás "Usar aceleración CUDA" en la app y es la
+            GPU NVIDIA. Si activas "Usar aceleración CUDA" en la app y es la
             primera vez, va a descargar el runtime de CUDA (~1.3GB) solo en ese
             momento — no hace falta para nada más.
 
@@ -152,5 +152,5 @@ jobs:
             información" → "Ejecutar de todas formas".
 
             El checksum SHA256 está en `VoiceTranscriberSetup.exe.sha256`, por
-            si querés verificar que la descarga no se corrompió.
+            si quieres verificar que la descarga no se corrompió.
           draft: true
