@@ -16,6 +16,11 @@ venv/
 .venv/
 env/
 
+# Salida de PyInstaller (ver build.spec) — se regenera con
+# `pyinstaller build.spec --clean`, no tiene sentido versionarla (varios GB).
+build/
+dist/
+
 # Logs
 *.log
 logs/

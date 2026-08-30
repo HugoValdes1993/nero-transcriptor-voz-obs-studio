@@ -20,6 +20,8 @@
     --text-weight: 700;
     --text-width: 800px;
     --text-height: 80px;
+    --text-stroke-width: 0px;
+    --text-stroke-color: #000000;
   }
   html, body {
     margin: 0;
@@ -58,6 +60,7 @@
     font-size: var(--text-font-size);
     color: var(--text-color);
     font-weight: var(--text-weight);
+    -webkit-text-stroke: var(--text-stroke-width) var(--text-stroke-color);
   }
   /* Texto parcial (final: false): tentativo, todavía puede cambiar cuando
      llegue la transcripción final de la misma frase. */
@@ -67,6 +70,46 @@
   }
   .subtitle-line-hidden {
     display: none !important;
+  }
+
+  /* Efectos de aparición del texto FINAL de un subtítulo — ver
+     playSubtitleAnimation() más abajo. El texto tentativo (parcial) nunca
+     dispara estos efectos, así que no hace falta que convivan con la regla
+     de arriba (#subtitle-container.subtitle-partial #subtitle-text). */
+  @keyframes subtitle-anim-fade {
+    from { opacity: 0; }
+    to { opacity: 1; }
+  }
+  .subtitle-anim-fade {
+    animation: subtitle-anim-fade 0.4s ease-out;
+  }
+
+  @keyframes subtitle-anim-bounce {
+    0%   { opacity: 0; transform: translateY(30px) scale(0.9); }
+    60%  { opacity: 1; transform: translateY(-8px) scale(1.03); }
+    100% { opacity: 1; transform: translateY(0) scale(1); }
+  }
+  .subtitle-anim-bounce {
+    animation: subtitle-anim-bounce 0.5s cubic-bezier(0.34, 1.56, 0.64, 1);
+  }
+
+  /* Unos saltos bruscos de posición/recorte/color antes de asentarse en el
+     text-shadow normal (0 2px 4px rgba(0,0,0,.6), igual que la regla base
+     de #subtitle-text) — steps(1, end) hace que cada tramo sea un corte
+     seco en vez de una interpolación suave, que es justamente el efecto
+     "glitcheado" buscado. El "round var(--overlay-radius)" del clip-path
+     mantiene las puntas redondeadas del cuadro aunque esté cortado. */
+  @keyframes subtitle-anim-glitch {
+    0%   { opacity: 0; transform: translate(0, 0); clip-path: inset(10% 0 40% 0 round var(--overlay-radius)); text-shadow: -3px 0 #ff2b6d, 3px 0 #00e5ff; }
+    10%  { opacity: 1; transform: translate(-4px, 2px); clip-path: inset(60% 0 5% 0 round var(--overlay-radius)); text-shadow: 3px 0 #ff2b6d, -3px 0 #00e5ff; }
+    20%  { transform: translate(3px, -2px); clip-path: inset(20% 0 55% 0 round var(--overlay-radius)); text-shadow: -2px 0 #ff2b6d, 2px 0 #00e5ff; }
+    30%  { transform: translate(-2px, 1px); clip-path: inset(75% 0 2% 0 round var(--overlay-radius)); text-shadow: 2px 0 #ff2b6d, -2px 0 #00e5ff; }
+    45%  { transform: translate(2px, 0); clip-path: inset(5% 0 60% 0 round var(--overlay-radius)); text-shadow: -1px 0 #ff2b6d, 1px 0 #00e5ff; }
+    60%  { transform: translate(0, 0); clip-path: inset(0 0 0 0 round var(--overlay-radius)); text-shadow: 1px 0 #ff2b6d, -1px 0 #00e5ff; }
+    100% { transform: translate(0, 0); clip-path: inset(0 0 0 0 round var(--overlay-radius)); text-shadow: 0 2px 4px rgba(0, 0, 0, 0.6); }
+  }
+  .subtitle-anim-glitch {
+    animation: subtitle-anim-glitch 0.5s steps(1, end);
   }
 </style>
 </head>
@@ -87,6 +130,23 @@
     // con clear_delay_ms; empieza en el mismo default de fábrica que usa
     // config/user_config.py hasta que el servidor mande el valor real.
     let subtitleClearDelayMs = DEFAULT_SUBTITLE_CLEAR_DELAY_MS;
+
+    // Nombre del efecto de aparición actual ("none"/"fade"/"bounce"/
+    // "glitch" — ver SUBTITLE_ANIMATION_CHOICES en config/user_config.py),
+    // actualizado por applyOverlayStyle().
+    let currentAnimationName = "none";
+    const ANIMATION_CLASS_PREFIX = "subtitle-anim-";
+
+    function playSubtitleAnimation() {
+      if (currentAnimationName === "none") return;
+      const className = ANIMATION_CLASS_PREFIX + currentAnimationName;
+      // Sacar la clase y forzar reflow antes de volver a ponerla: si la
+      // frase anterior ya usó este mismo efecto, el navegador no vuelve a
+      // reproducir una animación CSS cuya clase nunca se sacó.
+      subtitleTextElement.classList.remove(className);
+      void subtitleTextElement.offsetWidth;
+      subtitleTextElement.classList.add(className);
+    }
 
     function hexToRgba(hexColor, opacity) {
       const hex = hexColor.replace("#", "");
@@ -113,6 +173,9 @@
       root.setProperty("--text-weight", style.translated_font_weight);
       root.setProperty("--text-width", `${style.translated_width_px}px`);
       root.setProperty("--text-height", `${style.translated_height_px}px`);
+      root.setProperty("--text-stroke-width", `${style.translated_text_stroke_width_px}px`);
+      root.setProperty("--text-stroke-color", style.translated_text_stroke_color);
+      currentAnimationName = style.translated_animation;
 
       subtitleClearDelayMs = style.clear_delay_ms;
     }
@@ -141,8 +204,15 @@
         subtitleTextElement.classList.toggle("subtitle-line-hidden", !showTranslation);
 
         // payload.final === false -> texto tentativo, todavía puede
-        // reemplazarse por la versión final de la misma frase.
-        subtitleContainerElement.classList.toggle("subtitle-partial", payload.final === false);
+        // reemplazarse por la versión final de la misma frase. El efecto de
+        // aparición solo se dispara para texto FINAL — el tentativo cambia
+        // varias veces por segundo mientras se sigue hablando, y animarlo
+        // también saturaría la pantalla.
+        const isFinal = payload.final !== false;
+        subtitleContainerElement.classList.toggle("subtitle-partial", !isFinal);
+        if (isFinal && showTranslation && payload.translated) {
+          playSubtitleAnimation();
+        }
 
         clearTimeout(clearSubtitleTimeoutId);
         clearSubtitleTimeoutId = setTimeout(() => {

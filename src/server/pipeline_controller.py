@@ -1,25 +1,24 @@
 """
-Arranca y detiene el pipeline completo (servidor WebSocket + transcripción)
-en un hilo de fondo con su propio event loop de asyncio, separado del hilo
-principal donde vive la GUI.
+Arranca y detiene la transcripción en un hilo de fondo, separado del hilo
+principal donde vive la GUI. El servidor WebSocket del overlay (OverlayServer)
+tiene su propio ciclo de vida, independiente de esto — ver
+start_overlay_server()/stop_overlay_server(), llamados por
+src/gui/config_window.py al abrir/cerrar la ventana, no al iniciar/detener
+la transcripción.
 
-Por qué un hilo aparte: Tkinter necesita correr su mainloop en el hilo
-principal, y el pipeline (audio bloqueante + asyncio.run) no puede compartir
-ese mismo hilo. Esta clase es la que le permite a la ventana de
-configuración (src/gui/config_window.py) iniciar y detener la transcripción
-con el mismo botón, sin cerrar la ventana ni bloquearla mientras tanto.
+Por qué un hilo aparte para la transcripción: sounddevice y faster-whisper
+son bloqueantes, y Tkinter necesita correr su mainloop en el hilo principal.
+Esta clase es la que le permite a la ventana de configuración
+(src/gui/config_window.py) iniciar y detener la transcripción con el mismo
+botón, sin cerrar la ventana ni bloquearla mientras tanto.
 """
 
-import asyncio
 import threading
 from typing import Callable, Optional
 
-import websockets
-
-from config.settings import WEBSOCKET_HOST, WEBSOCKET_PORT
 from config.user_config import get_overlay_style
 from src.logging_utils import ComponentLogger
-from src.server.overlay_broadcaster import OverlayBroadcaster
+from src.server.overlay_server import OverlayServer
 from src.server.transcription_pipeline import TranscriptionPipeline
 
 logger = ComponentLogger("Main")
@@ -35,10 +34,9 @@ class PipelineController:
     """
 
     def __init__(self):
+        self._overlay_server = OverlayServer()
         self._thread: Optional[threading.Thread] = None
         self._pipeline: Optional[TranscriptionPipeline] = None
-        self._broadcaster: Optional[OverlayBroadcaster] = None
-        self._event_loop: Optional[asyncio.AbstractEventLoop] = None
 
         # stop() puede llegar ANTES de que self._pipeline exista todavía —
         # TranscriptionPipeline() tarda varios segundos en construirse
@@ -46,13 +44,24 @@ class PipelineController:
         # botón "Detener" ya está habilitado en la GUI. Sin esta bandera,
         # un clic en esa ventana se perdía en silencio (stop() no hacía
         # nada porque self._pipeline todavía era None) y el pipeline
-        # quedaba corriendo para siempre. _run_pipeline la revisa apenas
-        # termina de construir el pipeline para no perder ese pedido.
+        # quedaba corriendo para siempre. _run revisa apenas termina de
+        # construir el pipeline para no perder ese pedido.
         self._stop_requested = threading.Event()
 
     @property
     def is_running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
+
+    def start_overlay_server(self):
+        """Levanta el servidor WebSocket del overlay. Se llama al abrir la
+        ventana de configuración (ver ConfigWindow.__init__) — no depende de
+        que la transcripción esté corriendo, para que el Browser Source de
+        OBS y la vista previa de estilos puedan conectarse de entrada."""
+        self._overlay_server.start()
+        self._overlay_server.broadcaster.set_current_style(get_overlay_style())
+
+    def stop_overlay_server(self):
+        self._overlay_server.stop()
 
     def start(self, on_stopped: Callable[[Optional[Exception]], None]):
         if self.is_running:
@@ -73,50 +82,44 @@ class PipelineController:
     def push_overlay_style(self, style: dict):
         """
         Empuja un cambio de estilo del overlay (ver src/gui/config_window.py)
-        a los overlays ya conectados, sin esperar a que reconecten. Seguro
-        de llamar aunque el pipeline no esté corriendo: en ese caso no hay
-        nadie escuchando y no hace nada — el próximo arranque ya toma el
-        estilo actualizado de user_config.json de todos modos.
+        a los overlays ya conectados, sin esperar a que reconecten. Funciona
+        aunque la transcripción no esté corriendo (el servidor del overlay
+        vive independiente de eso — ver start_overlay_server).
         """
-        if self._broadcaster is None or self._event_loop is None:
-            return
-        self._broadcaster.set_current_style(style)
-        asyncio.run_coroutine_threadsafe(
-            self._broadcaster.broadcast_style(style), self._event_loop
+        self._overlay_server.broadcaster.set_current_style(style)
+        self._overlay_server.run_coroutine_threadsafe(
+            self._overlay_server.broadcaster.broadcast_style(style)
+        )
+
+    def push_preview_subtitle(self, original_text: str, translated_text: str):
+        """
+        Manda un subtítulo de muestra a los overlays conectados, para la
+        vista previa de estilos (ver ConfigWindow._on_preview_toggled) —
+        reusa el mismo mensaje que ya entienden los overlays para
+        transcripciones reales, con displayMode "both" para que tanto el
+        overlay original como el traducido tengan algo que mostrar sin
+        importar el flujo de traducción configurado.
+        """
+        self._overlay_server.run_coroutine_threadsafe(
+            self._overlay_server.broadcaster.broadcast(original_text, translated_text, True, "both")
         )
 
     def _run(self, on_stopped: Callable[[Optional[Exception]], None]):
         error: Optional[Exception] = None
         try:
-            asyncio.run(self._run_pipeline())
+            self._pipeline = TranscriptionPipeline(self._overlay_server.broadcaster, self._overlay_server.loop)
+
+            # Si stop() se llamó mientras se cargaban los modelos (ver
+            # comentario en __init__), el pedido queda guardado en
+            # _stop_requested: hay que aplicarlo ahora que el pipeline ya
+            # existe, o se perdería.
+            if self._stop_requested.is_set():
+                self._pipeline.request_stop()
+
+            self._pipeline.run()
         except Exception as exc:
             logger.error(f"El pipeline se detuvo por un error: {exc}")
             error = exc
         finally:
             self._pipeline = None
-            self._broadcaster = None
-            self._event_loop = None
             on_stopped(error)
-
-    async def _run_pipeline(self):
-        event_loop = asyncio.get_running_loop()
-        self._event_loop = event_loop
-        self._broadcaster = OverlayBroadcaster()
-        self._broadcaster.set_current_style(get_overlay_style())
-        broadcaster = self._broadcaster
-        self._pipeline = TranscriptionPipeline(broadcaster, event_loop)
-
-        # Si stop() se llamó mientras se cargaban los modelos (ver comentario
-        # en __init__), el pedido queda guardado en _stop_requested: hay que
-        # aplicarlo ahora que el pipeline ya existe, o se perdería.
-        if self._stop_requested.is_set():
-            self._pipeline.request_stop()
-
-        # El pipeline es bloqueante (audio + Whisper), así que corre en un
-        # hilo aparte del executor por defecto mientras este loop de asyncio
-        # atiende las conexiones WebSocket del overlay.
-        pipeline_task = event_loop.run_in_executor(None, self._pipeline.run)
-
-        async with websockets.serve(broadcaster.register_client, WEBSOCKET_HOST, WEBSOCKET_PORT):
-            logger.success(f"Overlay disponible en ws://{WEBSOCKET_HOST}:{WEBSOCKET_PORT}")
-            await pipeline_task

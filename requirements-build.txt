@@ -1,0 +1,7 @@
+# Dependencias SOLO para generar el .exe (ver build.spec) — no hacen falta
+# para correr la app desde código fuente (python main.py), por eso están
+# separadas de requirements.txt.
+#
+# Instalar con: pip install -r requirements-build.txt
+pyinstaller>=6.0
+pyinstaller-hooks-contrib>=2024.0

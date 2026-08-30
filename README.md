@@ -11,7 +11,8 @@ Stack: `faster-whisper` (large-v3-turbo, CUDA, int8_float16) + `Silero VAD` + `s
 voice-transcriber/
 ├── main.py                       # punto de entrada: python main.py
 ├── config/
-│   └── settings.py               # TODA la configuración editable vive aquí
+│   ├── settings.py               # configuración "de fábrica" del proyecto
+│   └── user_config.py            # configuración editable desde la GUI (persistida en user_config.json)
 ├── overlay/
 │   ├── obs_overlay_original.html    # Browser Source con solo el texto original
 │   └── obs_overlay_translated.html  # Browser Source con solo la traducción
@@ -20,10 +21,15 @@ voice-transcriber/
 └── src/
     ├── logging_utils.py          # logs a consola con formato consistente
     ├── startup/
-    │   └── cuda_dll_setup.py     # registra las DLLs de CUDA en Windows
+    │   ├── cuda_dll_setup.py     # registra las DLLs de CUDA en Windows
+    │   ├── cuda_availability.py  # detecta si hay GPU NVIDIA disponible
+    │   └── app_paths.py          # raíz de la app, en dev y empaquetada (.exe)
+    ├── gui/
+    │   └── config_window.py      # ventana de configuración + control de arranque/detención
     ├── audio/
     │   ├── device_resolver.py    # elige el micrófono correcto por nombre
     │   ├── stream_capture.py     # captura y resamplea el audio del micrófono
+    │   ├── mic_level_monitor.py  # nivel de audio en vivo para "Probar micrófono"
     │   └── debug_dump.py         # guarda utterances como .wav para debug
     ├── speech/
     │   ├── voice_activity_detector.py  # Silero VAD: ¿este frame tiene voz?
@@ -35,7 +41,9 @@ voice-transcriber/
     ├── text_filters/
     │   └── profanity_filter.py   # censura groserías en el texto del overlay
     └── server/
-        ├── overlay_broadcaster.py     # maneja las conexiones WebSocket
+        ├── overlay_server.py          # levanta el WebSocket del overlay (vive desde que se abre la GUI)
+        ├── overlay_broadcaster.py     # conexiones y envío de mensajes a los overlays
+        ├── pipeline_controller.py     # arranca/detiene la transcripción en un hilo aparte
         └── transcription_pipeline.py  # orquesta todo el flujo de arriba
 ```
 
@@ -114,9 +122,34 @@ de la escena.
 
 La ventana de configuración está organizada en pestañas: "Configuración
 general" (dispositivo de entrada, flujo de transcripción/traducción,
-aceleración por GPU) ya está resuelta de punta a punta. Las pestañas
-"Estilos texto original" y "Estilos texto traducido" (tipografía, color,
-tamaño por línea) están reservadas para una etapa siguiente.
+aceleración por GPU) y "Estilos texto original" / "Estilos texto traducido"
+(fuente —cualquiera instalada en el sistema, con buscador—, tamaño, color,
+opacidad, y ancho/alto exactos de la zona de texto) ya están resueltas de
+punta a punta.
+
+## Personalización visual del overlay
+
+Desde las pestañas "Estilos texto original" / "Estilos texto traducido" de la
+ventana de configuración, además de tipografía/color/tamaño:
+
+- **Presets de estilo**: un selector con 4 looks de fábrica ("Clásico", "Alto
+  contraste", "Minimalista sin fondo", "Neón") más los que vos guardes con
+  "💾 Guardar como preset...". Aplicar un preset pisa de una el fondo general
+  y la tipografía de los dos textos (original y traducido); "🗑 Eliminar
+  preset" borra los tuyos — los de fábrica no se pueden pisar ni eliminar.
+- **Contorno de texto**: color y ancho (0-6px) independientes por línea, útil
+  para mantener legibilidad sobre fondos claros o con `background_opacity`
+  en 0.
+- **Efectos de aparición**: "Ninguno" (default, sin cambios de comportamiento),
+  "Fade", "Bounce" o "Glitch" (saltos de posición/color que se asientan en el
+  texto normal) — se elige por separado para el texto original y el
+  traducido, y solo se dispara con el texto FINAL de cada frase; el texto
+  tentativo mientras seguís hablando nunca anima.
+- **Vista previa en vivo**: el botón "👁 Vista previa" de cada pestaña abre
+  ese overlay en tu navegador y le manda texto de muestra, sin necesidad de
+  tener la transcripción corriendo ni el micrófono activo — el servidor
+  WebSocket del overlay queda escuchando desde que se abre la ventana de
+  configuración, no solo durante una transcripción real.
 
 ## Transcripción parcial (feedback inmediato)
 
@@ -181,12 +214,28 @@ sigues hablando) también se traducen en el momento, o si solo se traduce el
 texto final. Traducir parciales da feedback más inmediato pero suma carga
 de CPU en cada intervalo — si notas que se atrasa, ponlo en `False`.
 
+## Empaquetado como .exe
+
+Para distribuir la app a otros streamers sin que necesiten Python ni instalar
+dependencias a mano, se empaqueta con PyInstaller (ver `build.spec` para el
+detalle de cada decisión — build "onedir", consola visible, qué paquetes
+necesitan collect_all y por qué):
+
+```bash
+pip install -r requirements-build.txt
+pyinstaller build.spec --clean
+```
+
+El resultado queda en `dist/VoiceTranscriber/` — esa carpeta COMPLETA es lo
+que se distribuye (varios GB, por los paquetes de CUDA), no solo el `.exe`
+suelto. `user_config.json` y los dos overlays (`overlay/*.html`, para pegar
+en OBS como "Local file") quedan al lado del `.exe` dentro de esa misma
+carpeta, y son estables entre sesiones — por eso el build es "onedir" y no
+"onefile".
+
 ## Próximos pasos (no incluidos todavía)
 
 - Persistencia de subtítulos en archivo `.srt` para VOD.
-- Empaquetado como `.exe` distribuible para otros streamers.
-- App de control (GUI) para elegir micrófono, tier de hardware y estilo del
-  overlay sin editar `config/settings.py` a mano.
 
 ## Autor
 

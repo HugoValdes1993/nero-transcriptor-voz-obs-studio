@@ -48,12 +48,12 @@ from config.settings import (
     WHISPER_SOURCE_LANGUAGE as DEFAULT_WHISPER_SOURCE_LANGUAGE,
 )
 from src.logging_utils import ComponentLogger
+from src.startup.app_paths import get_app_root
 from src.startup.cuda_availability import is_nvidia_gpu_available
 
 logger = ComponentLogger("UserConfig")
 
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-_USER_CONFIG_PATH = os.path.join(_PROJECT_ROOT, "user_config.json")
+_USER_CONFIG_PATH = os.path.join(get_app_root(), "user_config.json")
 
 # Los dos únicos flujos de transcripción/traducción soportados por la GUI
 # (ver _build_translation_direction_section en config_window.py). No es una
@@ -80,6 +80,12 @@ _DEFAULT_TRANSLATION_DIRECTION = (
 # ambas más que este mismo look. Reproduce el look de fábrica original: si
 # el usuario nunca tocó ningún control, el overlay se ve exactamente igual
 # que antes de que existiera esta configuración.
+# Efectos de aparición del texto FINAL de un subtítulo (ver
+# src/gui/config_window.py._build_animation_row y el JS de
+# overlay/obs_overlay_*.html). "none" reproduce el look de fábrica de
+# siempre — el texto tentativo (parcial) nunca anima, solo el final.
+SUBTITLE_ANIMATION_CHOICES = ("none", "fade", "bounce", "glitch")
+
 OVERLAY_STYLE_DEFAULTS = {
     # General: layout y fondo del cuadro (aplica igual en ambas páginas).
     "bottom_offset_px": 40,
@@ -100,6 +106,11 @@ OVERLAY_STYLE_DEFAULTS = {
     "original_font_weight": "700",
     "original_width_px": 800,
     "original_height_px": 2160,
+    # Contorno de texto (-webkit-text-stroke). Ancho 0 = sin contorno, mismo
+    # look de fábrica que antes de que existiera esta opción.
+    "original_text_stroke_color": "#000000",
+    "original_text_stroke_width_px": 0,
+    "original_animation": "none",
     # Texto traducido.
     "translated_font_family": "Segoe UI",
     "translated_font_size_px": 26,
@@ -108,6 +119,49 @@ OVERLAY_STYLE_DEFAULTS = {
     "translated_font_weight": "700",
     "translated_width_px": 800,
     "translated_height_px": 2160,
+    "translated_text_stroke_color": "#000000",
+    "translated_text_stroke_width_px": 0,
+    "translated_animation": "none",
+}
+
+# Looks completos preconfigurados, de fábrica (no se guardan en
+# user_config.json, no se pueden borrar ni sobrescribir — ver
+# is_built_in_style_preset). Cada uno es un override parcial sobre
+# OVERLAY_STYLE_DEFAULTS, para no repetir las claves que no cambian.
+BUILT_IN_STYLE_PRESETS = {
+    "Clásico": dict(OVERLAY_STYLE_DEFAULTS),
+    "Alto contraste": {
+        **OVERLAY_STYLE_DEFAULTS,
+        "background_color": "#000000",
+        "background_opacity": 0.85,
+        "original_text_color": "#ffffff",
+        "original_text_stroke_color": "#000000",
+        "original_text_stroke_width_px": 3,
+        "translated_text_color": "#ffffff",
+        "translated_text_stroke_color": "#000000",
+        "translated_text_stroke_width_px": 3,
+    },
+    "Minimalista sin fondo": {
+        **OVERLAY_STYLE_DEFAULTS,
+        "background_opacity": 0.0,
+        "original_text_stroke_color": "#000000",
+        "original_text_stroke_width_px": 2,
+        "translated_text_stroke_color": "#000000",
+        "translated_text_stroke_width_px": 2,
+    },
+    "Neón": {
+        **OVERLAY_STYLE_DEFAULTS,
+        "background_color": "#000000",
+        "background_opacity": 0.4,
+        "original_text_color": "#39ff14",
+        "original_text_stroke_color": "#003b00",
+        "original_text_stroke_width_px": 1,
+        "original_animation": "glitch",
+        "translated_text_color": "#00e5ff",
+        "translated_text_stroke_color": "#003b3b",
+        "translated_text_stroke_width_px": 1,
+        "translated_animation": "glitch",
+    },
 }
 
 
@@ -244,6 +298,58 @@ def set_overlay_style_value(key: str, value):
         return
 
     overlay_style[key] = value
+
+
+def get_overlay_style_presets() -> dict:
+    """Built-ins (ver BUILT_IN_STYLE_PRESETS) + los que el usuario haya
+    guardado (persistidos bajo "overlay_style_presets" en user_config.json)."""
+    return {**BUILT_IN_STYLE_PRESETS, **_user_config.get("overlay_style_presets", {})}
+
+
+def is_built_in_style_preset(name: str) -> bool:
+    return name in BUILT_IN_STYLE_PRESETS
+
+
+def save_overlay_style_preset(name: str):
+    """Guarda el overlay_style ACTUAL bajo `name`. Se guarda en memoria como
+    el resto de los setters de este módulo — no queda en disco hasta el
+    próximo save_user_config()."""
+    if is_built_in_style_preset(name):
+        raise ValueError(f"'{name}' es un preset de fábrica y no se puede sobrescribir.")
+    _user_config.setdefault("overlay_style_presets", {})[name] = dict(_user_config["overlay_style"])
+    logger.info(f"Preset de estilo guardado: '{name}'")
+
+
+def delete_overlay_style_preset(name: str):
+    if is_built_in_style_preset(name):
+        raise ValueError(f"'{name}' es un preset de fábrica y no se puede eliminar.")
+    _user_config.get("overlay_style_presets", {}).pop(name, None)
+    logger.info(f"Preset de estilo eliminado: '{name}'")
+
+
+def apply_overlay_style_preset(name: str) -> dict:
+    """
+    Reemplaza el overlay_style actual por el del preset `name`, mutando el
+    dict EN VEZ de reemplazarlo — ConfigWindow._overlay_style y el
+    OverlayServer del PipelineController guardan una referencia directa a
+    este mismo dict (ver get_overlay_style, que ya devuelve la referencia
+    viva en vez de una copia), así que reemplazar el objeto rompería esa
+    referencia compartida.
+
+    Rellena con OVERLAY_STYLE_DEFAULTS cualquier clave que el preset no
+    tenga (ej. un preset guardado antes de agregar una propiedad nueva),
+    mismo criterio defensivo que _ensure_defaults_persisted.
+    """
+    presets = get_overlay_style_presets()
+    if name not in presets:
+        raise ValueError(f"Preset de estilo desconocido: {name!r}")
+
+    preset_values = presets[name]
+    overlay_style = _user_config["overlay_style"]
+    overlay_style.clear()
+    for key, default_value in OVERLAY_STYLE_DEFAULTS.items():
+        overlay_style[key] = preset_values.get(key, default_value)
+    return overlay_style
 
 
 def get_whisper_device() -> str:

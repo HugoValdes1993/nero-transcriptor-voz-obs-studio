@@ -28,7 +28,13 @@ Autor: Nero
 """
 
 import os
-from tkinter import colorchooser, messagebox
+import re
+import subprocess
+import tkinter
+import webbrowser
+import winreg
+from pathlib import Path
+from tkinter import colorchooser, font as tkfont, messagebox, simpledialog
 
 import customtkinter as ctk
 
@@ -44,6 +50,11 @@ from config.user_config import (
     TRANSLATION_DIRECTION_EN_TO_ES,
     get_overlay_style,
     set_overlay_style_value,
+    get_overlay_style_presets,
+    is_built_in_style_preset,
+    save_overlay_style_preset,
+    delete_overlay_style_preset,
+    apply_overlay_style_preset,
     save_user_config,
 )
 from src.audio.device_resolver import (
@@ -52,11 +63,234 @@ from src.audio.device_resolver import (
 )
 from src.audio.mic_level_monitor import MicLevelMonitor
 from src.server.pipeline_controller import PipelineController
+from src.startup.app_paths import get_app_root
 from src.startup.cuda_availability import is_nvidia_gpu_available
 
-# Ruta absoluta a la raíz del proyecto (voice-transcriber/), tres niveles
-# arriba de este archivo (src/gui/config_window.py -> src/gui -> src -> raíz).
-_PROJECT_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+# Raíz de la app (repo en dev, carpeta del .exe empaquetado) — ver
+# src/startup/app_paths.get_app_root para el porqué de por qué no se calcula
+# acá mismo con __file__.
+_PROJECT_ROOT = get_app_root()
+
+
+def _parse_shell_open_command(command_template: str) -> list[str]:
+    """Separa un comando del registro tipo `"C:\\ruta\\app.exe" "%1"` en
+    tokens, sacando las comillas — regex simple en vez de shlex.split
+    (pensado para bash) o subprocess.list2cmdline (arma comandos, no los
+    parsea)."""
+    tokens = re.findall(r'"[^"]*"|\S+', command_template)
+    return [token.strip('"') for token in tokens]
+
+
+def _resolve_default_browser_command() -> list[str] | None:
+    """
+    Resuelve el comando del navegador que Windows tiene configurado como
+    predeterminado para abrir links http, leyendo el mismo registro que usa
+    el panel "Aplicaciones predeterminadas". None si no se pudo leer (ej.
+    nunca se eligió un navegador default explícito).
+    """
+    try:
+        with winreg.OpenKey(
+            winreg.HKEY_CURRENT_USER,
+            r"Software\Microsoft\Windows\Shell\Associations\UrlAssociations\http\UserChoice",
+        ) as key:
+            prog_id, _ = winreg.QueryValueEx(key, "ProgId")
+        with winreg.OpenKey(winreg.HKEY_CLASSES_ROOT, rf"{prog_id}\shell\open\command") as key:
+            command_template, _ = winreg.QueryValueEx(key, "")
+    except OSError:
+        return None
+    return _parse_shell_open_command(command_template)
+
+
+def _open_url_in_browser(url: str):
+    """
+    Abre `url` con el navegador real que el usuario eligió como
+    predeterminado, en vez de webbrowser.open()/os.startfile() a secas.
+
+    Por qué: esos dos terminan resolviendo la URL vía la asociación de la
+    EXTENSIÓN .html (Panel de control -> "Aplicaciones predeterminadas" la
+    guarda aparte de la asociación del PROTOCOLO http) — en muchas
+    instalaciones de Windows esa asociación de archivo sigue apuntando a
+    Internet Explorer por default de fábrica, un binario retirado en
+    Windows 11 que no abre ninguna ventana visible aunque "funcione" sin
+    tirar error. La asociación del protocolo http, en cambio, sí apunta al
+    navegador real (Edge/Chrome/Firefox/etc.), así que se resuelve esa en
+    vez de dejar que Windows elija.
+    """
+    command = _resolve_default_browser_command()
+    if command:
+        args = [url if part == "%1" else part for part in command]
+        if url not in args:
+            args.append(url)
+        try:
+            subprocess.Popen(args)
+            return
+        except OSError:
+            pass
+    webbrowser.open(url)
+
+
+class _FontFamilyPicker:
+    """
+    Campo de texto + lista desplegable para elegir una fuente instalada en el
+    sistema (ver ConfigWindow._system_font_families), filtrable escribiendo.
+
+    No usa CTkComboBox: su dropdown es un tkinter.Menu nativo de Windows, que
+    no responde a la rueda del mouse — con cientos de fuentes instaladas,
+    poder filtrar escribiendo pero no poder scrollear el resultado lo hacía
+    prácticamente inutilizable. Este picker arma su propia lista desplegable
+    (un Listbox dentro de un Toplevel sin bordes, posicionado debajo del
+    campo) para poder scrollear con la rueda como cualquier lista normal.
+    """
+
+    MAX_VISIBLE_ROWS = 8
+    POPUP_BG_COLOR = "#2b2b2b"
+    POPUP_BORDER_COLOR = "#565b5e"
+    POPUP_SELECT_COLOR = "#1f6aa5"
+
+    def __init__(self, parent, all_values: list[str], initial_value: str, on_value_committed):
+        self._all_values = all_values
+        self._on_value_committed = on_value_committed
+        self._last_committed_value = initial_value
+        self._popup = None
+        self._listbox = None
+
+        self.entry = ctk.CTkEntry(parent)
+        self.entry.insert(0, initial_value)
+        self.entry.bind("<KeyRelease>", self._on_key_release)
+        self.entry.bind("<Return>", self._on_return)
+        self.entry.bind("<Escape>", lambda _event: self._close_popup())
+        self.entry.bind("<FocusOut>", self._on_focus_out)
+
+    def pack(self, **kwargs):
+        self.entry.pack(**kwargs)
+
+    def set(self, value: str):
+        self.entry.delete(0, "end")
+        self.entry.insert(0, value)
+
+    def _matching_values(self) -> list[str]:
+        typed = self.entry.get().strip()
+        if not typed:
+            return self._all_values
+        return [name for name in self._all_values if typed.casefold() in name.casefold()]
+
+    def _commit(self, value: str):
+        self.set(value)
+        if value != self._last_committed_value:
+            self._last_committed_value = value
+            self._on_value_committed(value)
+
+    def _on_key_release(self, event):
+        # Return/Escape/flechas ya tienen su propio binding — no deben
+        # reabrir ni refiltrar la lista.
+        if event.keysym in ("Return", "Escape", "Up", "Down"):
+            return
+        matches = self._matching_values()
+        if matches:
+            self._show_popup(matches)
+        else:
+            self._close_popup()
+
+    def _on_return(self, _event=None):
+        typed = self.entry.get().strip()
+        match = next((name for name in self._all_values if name.casefold() == typed.casefold()), None)
+        if match is not None:
+            self._commit(match)
+            self._close_popup()
+        return "break"
+
+    def _on_focus_out(self, _event=None):
+        # Al hacer click en un ítem del Listbox, el foco sale del Entry antes
+        # de que termine de procesarse el click — se posterga la validación
+        # para no cerrar/revertir de encima de una selección en curso.
+        self.entry.after(150, self._finalize_focus_out)
+
+    def _finalize_focus_out(self):
+        if self._popup is not None and self.entry.focus_get() is self._listbox:
+            return
+        self._close_popup()
+
+        typed = self.entry.get().strip()
+        match = next((name for name in self._all_values if name.casefold() == typed.casefold()), None)
+        if match is None:
+            # No coincide con ninguna fuente instalada (typo, o foco perdido
+            # a medio escribir): se revierte en vez de aplicar un
+            # font-family que el overlay no va a poder resolver.
+            self.set(self._last_committed_value)
+            return
+        self._commit(match)
+
+    def _create_popup(self):
+        self._popup = tkinter.Toplevel(self.entry)
+        self._popup.withdraw()
+        self._popup.overrideredirect(True)
+        self._popup.attributes("-topmost", True)
+
+        frame = tkinter.Frame(
+            self._popup,
+            bg=self.POPUP_BG_COLOR,
+            highlightthickness=1,
+            highlightbackground=self.POPUP_BORDER_COLOR,
+        )
+        frame.pack(fill="both", expand=True)
+
+        scrollbar = tkinter.Scrollbar(frame)
+        scrollbar.pack(side="right", fill="y")
+
+        self._listbox = tkinter.Listbox(
+            frame,
+            yscrollcommand=scrollbar.set,
+            bg=self.POPUP_BG_COLOR,
+            fg="white",
+            selectbackground=self.POPUP_SELECT_COLOR,
+            selectforeground="white",
+            activestyle="none",
+            highlightthickness=0,
+            borderwidth=0,
+            exportselection=False,
+        )
+        self._listbox.pack(side="left", fill="both", expand=True)
+        scrollbar.configure(command=self._listbox.yview)
+
+        # Se lee la posición del click directamente (nearest) en vez de
+        # depender de <<ListboxSelect>>/foco: así la selección no queda
+        # sujeta a la carrera con el FocusOut del Entry (ver _on_focus_out).
+        self._listbox.bind("<Button-1>", self._on_listbox_clicked)
+        self._listbox.bind("<MouseWheel>", self._on_mousewheel)
+
+    def _on_listbox_clicked(self, event):
+        index = self._listbox.nearest(event.y)
+        if index < 0:
+            return
+        self._commit(self._listbox.get(index))
+        self._close_popup()
+        return "break"
+
+    def _on_mousewheel(self, event):
+        self._listbox.yview_scroll(int(-1 * (event.delta / 120)), "units")
+        return "break"
+
+    def _show_popup(self, matches: list[str]):
+        if self._popup is None:
+            self._create_popup()
+
+        self._listbox.delete(0, "end")
+        for name in matches:
+            self._listbox.insert("end", name)
+        self._listbox.configure(height=min(len(matches), self.MAX_VISIBLE_ROWS))
+
+        self._popup.update_idletasks()
+        width = self.entry.winfo_width()
+        height = self._popup.winfo_reqheight()
+        x = self.entry.winfo_rootx()
+        y = self.entry.winfo_rooty() + self.entry.winfo_height()
+        self._popup.geometry(f"{width}x{height}+{x}+{y}")
+        self._popup.deiconify()
+        self._popup.lift()
+
+    def _close_popup(self):
+        if self._popup is not None:
+            self._popup.withdraw()
 
 
 class ConfigWindow(ctk.CTk):
@@ -109,23 +343,17 @@ class ConfigWindow(ctk.CTk):
         "Extra negrita": "800",
     }
 
-    # Fuentes preinstaladas de fábrica en Windows 10/11 (no dependen de que
-    # el usuario tenga nada extra instalado, algo importante pensando en el
-    # .exe distribuible): cubren sans-serif, serif, monoespaciada y un par
-    # de opciones "de impacto" típicas de subtítulos/streaming.
-    FONT_FAMILY_OPTIONS = [
-        "Segoe UI",
-        "Arial",
-        "Calibri",
-        "Verdana",
-        "Tahoma",
-        "Trebuchet MS",
-        "Georgia",
-        "Times New Roman",
-        "Consolas",
-        "Comic Sans MS",
-        "Impact",
-    ]
+    # Etiqueta legible -> nombre interno del efecto (ver
+    # SUBTITLE_ANIMATION_CHOICES en config/user_config.py y el JS de
+    # overlay/obs_overlay_*.html, que es quien realmente sabe animar cada
+    # uno). Se dispara solo cuando una frase queda transcripta en
+    # definitiva, nunca en el texto tentativo.
+    SUBTITLE_ANIMATION_OPTIONS = {
+        "Ninguno": "none",
+        "Fade": "fade",
+        "Bounce": "bounce",
+        "Glitch": "glitch",
+    }
 
     # Rango del slider de opacidad del texto, en porcentaje (0-100) — se
     # guarda como fracción 0.0-1.0 (ver original_text_opacity/
@@ -133,6 +361,27 @@ class ConfigWindow(ctk.CTk):
     # que ya usa background_opacity.
     TEXT_OPACITY_MIN_PERCENT = 0
     TEXT_OPACITY_MAX_PERCENT = 100
+
+    # Ancho del contorno de texto (-webkit-text-stroke). 0 = sin contorno;
+    # un tope bajo alcanza porque a partir de unos pocos px el contorno
+    # empieza a comerse los huecos de letras como "o"/"e" y se vuelve
+    # ilegible en vez de ayudar.
+    TEXT_STROKE_WIDTH_MIN_PX = 0
+    TEXT_STROKE_WIDTH_MAX_PX = 6
+
+    PREVIEW_BUTTON_START_TEXT = "👁 Vista previa"
+    PREVIEW_BUTTON_STOP_TEXT = "⏹ Detener vista previa"
+    # Texto de muestra que se manda al overlay mientras la vista previa está
+    # activa — se reenvía cada PREVIEW_REFRESH_INTERVAL_MS (por debajo de
+    # clear_delay_ms, 6000ms de fábrica) para que no desaparezca solo
+    # mientras el usuario todavía está ajustando estilos.
+    PREVIEW_SAMPLE_ORIGINAL_TEXT = "Así se ve tu subtítulo en vivo"
+    PREVIEW_SAMPLE_TRANSLATED_TEXT = "This is how your live subtitle looks"
+    PREVIEW_REFRESH_INTERVAL_MS = 2000
+
+    STYLE_PRESET_PLACEHOLDER = "Elegir preset..."
+    SAVE_PRESET_BUTTON_TEXT = "💾 Guardar como preset..."
+    DELETE_PRESET_BUTTON_TEXT = "🗑 Eliminar preset"
 
     IDLE_BUTTON_TEXT = "Iniciar transcripción"
     STARTING_BUTTON_TEXT = "Iniciando..."
@@ -176,6 +425,21 @@ class ConfigWindow(ctk.CTk):
         self._pipeline_controller = PipelineController()
         self._mic_level_monitor = MicLevelMonitor()
 
+        # El servidor WebSocket del overlay vive desde que se abre esta
+        # ventana (ver stop_overlay_server en _on_close_requested), no solo
+        # mientras la transcripción está corriendo — así la vista previa de
+        # estilos (ver _on_preview_toggled) funciona sin arrancar Whisper.
+        self._pipeline_controller.start_overlay_server()
+
+        # Fuentes instaladas en el sistema operativo (no una lista fija de
+        # fábrica): incluye cualquier fuente que el usuario haya cargado a
+        # mano en Windows, porque el Browser Source de OBS es Chromium (CEF)
+        # y en Windows resuelve font-family contra las mismas fuentes que ve
+        # Tk acá (GDI/DirectWrite) — lo que aparece en este selector se va a
+        # poder aplicar en el overlay. Se calcula una sola vez porque las dos
+        # pestañas de estilo (original/traducido) comparten el mismo listado.
+        self._system_font_families = self._get_system_font_families()
+
         # Copia de trabajo en memoria del estilo del overlay: los controles
         # de las pestañas de estilo se construyen a partir de esto, y cada
         # cambio actualiza tanto esta copia como el JSON persistido (ver
@@ -188,6 +452,15 @@ class ConfigWindow(ctk.CTk):
         # transcripción — ver _build_pixel_entry_row y _validate_style_inputs.
         self._pixel_size_entries = []
 
+        # Botones de vista previa (uno por pestaña de estilo) y el id del
+        # `after` pendiente de cada uno mientras está activa — ver
+        # _build_preview_toggle / _on_preview_toggled. Se deshabilitan
+        # mientras la transcripción real está corriendo (_request_start) y
+        # se detienen todos al reconstruir las pestañas de estilo tras
+        # aplicar un preset (_rebuild_style_tabs) o al cerrar la ventana.
+        self._preview_toggle_buttons = []
+        self._active_preview_after_ids = {}
+
         # El guardado en disco es manual (botón "Guardar configuración" en
         # el footer, ver save_user_config en config/user_config.py) — este
         # flag distingue "hay cambios sin guardar" para poder avisar antes
@@ -196,6 +469,19 @@ class ConfigWindow(ctk.CTk):
 
         self._build_layout()
         self.protocol("WM_DELETE_WINDOW", self._on_close_requested)
+
+    @staticmethod
+    def _get_system_font_families() -> list[str]:
+        """
+        Lista ordenada de fuentes instaladas en el sistema, vía Tk (que en
+        Windows lee las mismas fuentes registradas que usa GDI/DirectWrite).
+        Se excluyen las fuentes "verticales" de Windows (prefijo "@", ej.
+        "@MS Gothic") — son variantes pensadas para texto vertical japonés,
+        no aportan nada como opción de subtítulo horizontal y solo duplican
+        ruido en el selector.
+        """
+        families = {name for name in tkfont.families() if not name.startswith("@")}
+        return sorted(families, key=str.casefold)
 
     def _center_on_screen(self):
         """Calcula la posición para que la ventana quede centrada en la
@@ -243,20 +529,49 @@ class ConfigWindow(ctk.CTk):
         # así que cada una necesita poder scrollear por su cuenta.
         self._build_general_tab(self._build_scrollable_tab_content(general_tab))
 
-        # El resto de los controles de estilo (color, etc.) se agrega en una
-        # etapa siguiente — por ahora cada pestaña tiene el link al overlay
-        # que le corresponde y los controles de tipografía/tamaño.
-        original_style_content = self._build_scrollable_tab_content(original_style_tab)
-        self._build_overlay_link_section(original_style_content, self.ORIGINAL_OVERLAY_FILE_PATH)
+        # Referencias guardadas para poder vaciar y repoblar estas dos
+        # pestañas cuando se aplica un preset de estilo — ver
+        # _rebuild_style_tabs.
+        self._original_style_content = self._build_scrollable_tab_content(original_style_tab)
+        self._translated_style_content = self._build_scrollable_tab_content(translated_style_tab)
+        self._populate_style_tabs()
+
+    def _populate_style_tabs(self):
+        """
+        Cuerpo compartido entre el build inicial (_build_content_area) y
+        _rebuild_style_tabs (tras aplicar un preset) — arma el contenido de
+        ambas pestañas de estilo a partir de self._overlay_style. El
+        selector de presets vive una sola vez, al principio de la pestaña
+        de texto original, porque aplica a las dos pestañas (y al fondo
+        general) a la vez.
+        """
+        self._build_style_presets_section(self._original_style_content)
+        self._build_overlay_link_section(self._original_style_content, self.ORIGINAL_OVERLAY_FILE_PATH)
         self._build_text_size_controls(
-            original_style_content, prefix="original", tab_name=self.TAB_ORIGINAL_STYLE
+            self._original_style_content, prefix="original", tab_name=self.TAB_ORIGINAL_STYLE
         )
 
-        translated_style_content = self._build_scrollable_tab_content(translated_style_tab)
-        self._build_overlay_link_section(translated_style_content, self.TRANSLATED_OVERLAY_FILE_PATH)
+        self._build_overlay_link_section(self._translated_style_content, self.TRANSLATED_OVERLAY_FILE_PATH)
         self._build_text_size_controls(
-            translated_style_content, prefix="translated", tab_name=self.TAB_TRANSLATED_STYLE
+            self._translated_style_content, prefix="translated", tab_name=self.TAB_TRANSLATED_STYLE
         )
+
+    def _rebuild_style_tabs(self):
+        """Vacía y reconstruye ambas pestañas de estilo para reflejar un
+        cambio que tocó muchos valores a la vez (aplicar un preset) — los
+        controles individuales (sliders, swatches) no tienen un mecanismo
+        de re-sync propio, así que reconstruirlos desde cero es más simple
+        y confiable que actualizar cada uno a mano."""
+        self._stop_all_previews()
+        self._pixel_size_entries = []
+        self._preview_toggle_buttons = []
+
+        for child in self._original_style_content.winfo_children():
+            child.destroy()
+        for child in self._translated_style_content.winfo_children():
+            child.destroy()
+
+        self._populate_style_tabs()
 
     @staticmethod
     def _build_scrollable_tab_content(tab: ctk.CTkFrame) -> ctk.CTkScrollableFrame:
@@ -268,6 +583,102 @@ class ConfigWindow(ctk.CTk):
         self._build_audio_device_section(parent)
         self._build_translation_direction_section(parent)
         self._build_cuda_acceleration_section(parent)
+
+    def _build_style_presets_section(self, parent):
+        """
+        Selector de presets de estilo (built-in + guardados por el usuario).
+        Vive una sola vez, al principio de la pestaña de texto original,
+        porque aplicar un preset pisa TODO el overlay_style (fondo general +
+        texto original + texto traducido) de una — ver
+        apply_overlay_style_preset en config/user_config.py.
+        """
+        section = ctk.CTkFrame(parent, fg_color="transparent")
+        section.pack(fill="x", padx=4, pady=(0, 14))
+
+        ctk.CTkLabel(
+            section,
+            text="Preset de estilo (aplica a original, traducido y fondo)",
+            font=ctk.CTkFont(size=13, weight="bold"),
+        ).pack(anchor="w")
+
+        self.preset_menu = ctk.CTkOptionMenu(
+            section, values=self._preset_menu_values(), command=self._on_preset_selected
+        )
+        self.preset_menu.set(self.STYLE_PRESET_PLACEHOLDER)
+        self.preset_menu.pack(fill="x", pady=(6, 0))
+
+        buttons_row = ctk.CTkFrame(section, fg_color="transparent")
+        buttons_row.pack(fill="x", pady=(6, 0))
+
+        ctk.CTkButton(
+            buttons_row,
+            text=self.SAVE_PRESET_BUTTON_TEXT,
+            height=28,
+            command=self._on_save_preset_clicked,
+        ).pack(side="left")
+
+        self.delete_preset_button = ctk.CTkButton(
+            buttons_row,
+            text=self.DELETE_PRESET_BUTTON_TEXT,
+            height=28,
+            fg_color="transparent",
+            border_width=1,
+            state="disabled",
+            command=self._on_delete_preset_clicked,
+        )
+        self.delete_preset_button.pack(side="left", padx=(8, 0))
+
+    def _preset_menu_values(self) -> list[str]:
+        return [self.STYLE_PRESET_PLACEHOLDER] + list(get_overlay_style_presets().keys())
+
+    def _on_preset_selected(self, name: str):
+        if name == self.STYLE_PRESET_PLACEHOLDER:
+            return
+
+        self._overlay_style = apply_overlay_style_preset(name)
+        self._has_unsaved_changes = True
+        self._pipeline_controller.push_overlay_style(self._overlay_style)
+        self._rebuild_style_tabs()
+
+        # _rebuild_style_tabs reconstruye este mismo selector desde cero
+        # (ver _build_style_presets_section) — hay que volver a seleccionar
+        # el preset recién aplicado y reflejar si se puede borrar o no.
+        self.preset_menu.set(name)
+        self.delete_preset_button.configure(state="disabled" if is_built_in_style_preset(name) else "normal")
+
+    def _on_save_preset_clicked(self):
+        name = simpledialog.askstring(
+            "Guardar preset", "Nombre del preset:", parent=self
+        )
+        if name is None:
+            return
+        name = name.strip()
+        if not name:
+            return
+        if is_built_in_style_preset(name):
+            messagebox.showerror(
+                "Nombre inválido", f"'{name}' es un preset de fábrica y no se puede sobrescribir."
+            )
+            return
+
+        save_overlay_style_preset(name)
+        self._has_unsaved_changes = True
+        self.preset_menu.configure(values=self._preset_menu_values())
+        self.preset_menu.set(name)
+        self.delete_preset_button.configure(state="normal")
+
+    def _on_delete_preset_clicked(self):
+        name = self.preset_menu.get()
+        if name == self.STYLE_PRESET_PLACEHOLDER or is_built_in_style_preset(name):
+            return
+        if not messagebox.askyesno("Eliminar preset", f"¿Eliminar el preset '{name}'?"):
+            return
+
+        delete_overlay_style_preset(name)
+        self._has_unsaved_changes = True
+        self.preset_menu.configure(values=self._preset_menu_values())
+        self.preset_menu.set(self.STYLE_PRESET_PLACEHOLDER)
+        self.delete_preset_button.configure(state="disabled")
 
     def _build_overlay_link_section(self, parent, overlay_file_path: str):
         """
@@ -290,11 +701,72 @@ class ConfigWindow(ctk.CTk):
         path_entry.configure(state="readonly")
         path_entry.pack(fill="x", pady=(4, 0))
 
-        copy_button = ctk.CTkButton(section, text=self.COPY_LINK_BUTTON_TEXT, width=180, height=28)
+        buttons_row = ctk.CTkFrame(section, fg_color="transparent")
+        buttons_row.pack(fill="x", pady=(6, 0))
+
+        copy_button = ctk.CTkButton(buttons_row, text=self.COPY_LINK_BUTTON_TEXT, width=180, height=28)
         copy_button.configure(
             command=lambda: self._on_copy_overlay_link_clicked(overlay_file_path, copy_button)
         )
-        copy_button.pack(anchor="w", pady=(6, 0))
+        copy_button.pack(side="left")
+
+        self._build_preview_toggle(buttons_row, overlay_file_path)
+
+    def _build_preview_toggle(self, parent, overlay_file_path: str):
+        """
+        Botón que abre este overlay en el navegador por defecto y le manda
+        texto de muestra (ver PipelineController.push_preview_subtitle) sin
+        depender de que la transcripción esté corriendo — el servidor ya
+        está arriba desde que se abrió esta ventana (ver
+        start_overlay_server en __init__). Los cambios de estilo se ven al
+        toque porque _on_style_value_changed ya empuja cada cambio en vivo.
+        """
+        button = ctk.CTkButton(
+            parent,
+            text=self.PREVIEW_BUTTON_START_TEXT,
+            width=200,
+            height=28,
+            fg_color="transparent",
+            border_width=1,
+        )
+        button.configure(command=lambda: self._on_preview_toggled(button, overlay_file_path))
+        button.pack(side="left", padx=(8, 0))
+        self._preview_toggle_buttons.append(button)
+
+    def _on_preview_toggled(self, button, overlay_file_path: str):
+        if button in self._active_preview_after_ids:
+            self._stop_preview(button)
+            return
+
+        # Path.as_uri() arma la URI file:// bien formada (barras correctas
+        # y espacios/caracteres especiales del path codificados como %20,
+        # etc.); _open_url_in_browser evita que Windows la abra con
+        # Internet Explorer vía la asociación de archivo .html en vez del
+        # navegador real (ver su docstring).
+        _open_url_in_browser(Path(overlay_file_path).as_uri())
+        button.configure(text=self.PREVIEW_BUTTON_STOP_TEXT)
+        self._run_preview_tick(button)
+
+    def _run_preview_tick(self, button):
+        self._pipeline_controller.push_preview_subtitle(
+            self.PREVIEW_SAMPLE_ORIGINAL_TEXT, self.PREVIEW_SAMPLE_TRANSLATED_TEXT
+        )
+        after_id = self.after(self.PREVIEW_REFRESH_INTERVAL_MS, lambda: self._run_preview_tick(button))
+        self._active_preview_after_ids[button] = after_id
+
+    def _stop_preview(self, button):
+        after_id = self._active_preview_after_ids.pop(button, None)
+        if after_id is not None:
+            self.after_cancel(after_id)
+        # El botón puede haber sido destruido ya (ver _rebuild_style_tabs,
+        # que llama a _stop_all_previews ANTES de destruir los widgets) —
+        # solo tocarlo si sigue vivo.
+        if button.winfo_exists():
+            button.configure(text=self.PREVIEW_BUTTON_START_TEXT)
+
+    def _stop_all_previews(self):
+        for button in list(self._active_preview_after_ids.keys()):
+            self._stop_preview(button)
 
     def _on_copy_overlay_link_clicked(self, overlay_file_path: str, button):
         self.clipboard_clear()
@@ -351,6 +823,8 @@ class ConfigWindow(ctk.CTk):
 
         self._build_font_size_slider_row(section, f"{prefix}_font_size_px")
         self._build_text_color_controls(section, prefix)
+        self._build_text_stroke_controls(section, prefix)
+        self._build_animation_row(section, f"{prefix}_animation")
 
         width_column, height_column = self._build_paired_row(section)
         self._build_pixel_entry_row(
@@ -407,13 +881,19 @@ class ConfigWindow(ctk.CTk):
         slider.pack(fill="x", pady=(2, 0))
 
     def _build_font_family_row(self, parent, style_key: str):
+        """
+        Selector de fuente para ESTE overlay (original o traducido — cada
+        pestaña llama a este método con su propio style_key, así que hay un
+        selector independiente por pestaña). Ver _FontFamilyPicker para el
+        motivo de no usar CTkComboBox acá.
+        """
         current_value = self._overlay_style[style_key]
-        # Fallback defensivo: si el JSON tiene una fuente que no está en la
-        # lista curada (ej. editada a mano), se agrega al final en vez de
-        # perderla silenciosamente al mostrar el selector.
-        options = list(self.FONT_FAMILY_OPTIONS)
-        if current_value not in options:
-            options.append(current_value)
+        all_fonts = self._system_font_families
+        # Fallback defensivo: si el JSON tiene una fuente que ya no está
+        # instalada en este equipo (ej. config copiada de otra máquina), se
+        # agrega para no perderla silenciosamente al mostrar el selector.
+        if current_value not in all_fonts:
+            all_fonts = sorted(all_fonts + [current_value], key=str.casefold)
 
         row = ctk.CTkFrame(parent, fg_color="transparent")
         row.pack(fill="x")
@@ -423,13 +903,13 @@ class ConfigWindow(ctk.CTk):
             font=ctk.CTkFont(size=12),
         ).pack(anchor="w")
 
-        menu = ctk.CTkOptionMenu(
+        picker = _FontFamilyPicker(
             row,
-            values=options,
-            command=lambda selected: self._on_style_value_changed(style_key, selected),
+            all_values=all_fonts,
+            initial_value=current_value,
+            on_value_committed=lambda value: self._on_style_value_changed(style_key, value),
         )
-        menu.set(current_value)
-        menu.pack(fill="x", pady=(2, 0))
+        picker.pack(fill="x", pady=(2, 0))
 
     def _build_text_color_controls(self, parent, prefix: str):
         """
@@ -496,6 +976,96 @@ class ConfigWindow(ctk.CTk):
 
         self._build_opacity_slider_row(row, opacity_style_key)
 
+    def _build_text_stroke_controls(self, parent, prefix: str):
+        """
+        Contorno de texto (-webkit-text-stroke): mismo patrón de color que
+        _build_text_color_controls, más un slider de ancho en vez de
+        opacidad. Ancho 0 (default) = sin contorno, así que por defecto el
+        overlay se ve exactamente igual que antes de que existiera esta
+        opción.
+        """
+        color_style_key = f"{prefix}_text_stroke_color"
+        width_style_key = f"{prefix}_text_stroke_width_px"
+
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", pady=(8, 0))
+        ctk.CTkLabel(
+            row,
+            text="Contorno de texto",
+            font=ctk.CTkFont(size=12),
+        ).pack(anchor="w")
+
+        picker_row = ctk.CTkFrame(row, fg_color="transparent")
+        picker_row.pack(fill="x", pady=(2, 0))
+
+        swatch = ctk.CTkLabel(
+            picker_row,
+            text="",
+            width=28,
+            height=22,
+            corner_radius=4,
+            fg_color=self._overlay_style[color_style_key],
+        )
+        swatch.pack(side="left")
+
+        hex_label = ctk.CTkLabel(
+            picker_row,
+            text=self._overlay_style[color_style_key],
+            font=ctk.CTkFont(size=12),
+        )
+        hex_label.pack(side="left", padx=(8, 0))
+
+        def on_pick_color():
+            _, picked_hex = colorchooser.askcolor(
+                color=self._overlay_style[color_style_key],
+                title="Elegir color de contorno",
+            )
+            if picked_hex is None:
+                return
+            swatch.configure(fg_color=picked_hex)
+            hex_label.configure(text=picked_hex)
+            self._on_style_value_changed(color_style_key, picked_hex)
+
+        ctk.CTkButton(
+            picker_row,
+            text="🎨 Elegir color",
+            width=120,
+            height=26,
+            command=on_pick_color,
+        ).pack(side="right")
+
+        current_width = self._overlay_style[width_style_key]
+
+        width_header_row = ctk.CTkFrame(row, fg_color="transparent")
+        width_header_row.pack(fill="x", pady=(6, 0))
+        ctk.CTkLabel(
+            width_header_row,
+            text=f"Ancho (0 = sin contorno, máx. {self.TEXT_STROKE_WIDTH_MAX_PX}px)",
+            font=ctk.CTkFont(size=12),
+        ).pack(side="left")
+        width_value_label = ctk.CTkLabel(
+            width_header_row,
+            text=f"{current_width}px",
+            font=ctk.CTkFont(size=12),
+            text_color=self.IDLE_STATUS_COLOR,
+        )
+        width_value_label.pack(side="right")
+
+        def on_width_slider_moved(raw_value):
+            value = int(round(raw_value))
+            width_value_label.configure(text=f"{value}px")
+            self._on_style_value_changed(width_style_key, value)
+
+        width_slider = ctk.CTkSlider(
+            row,
+            from_=self.TEXT_STROKE_WIDTH_MIN_PX,
+            to=self.TEXT_STROKE_WIDTH_MAX_PX,
+            number_of_steps=self.TEXT_STROKE_WIDTH_MAX_PX - self.TEXT_STROKE_WIDTH_MIN_PX,
+            command=on_width_slider_moved,
+        )
+        width_slider.set(current_width)
+        width_slider.pack(fill="x", pady=(2, 0))
+
     def _build_opacity_slider_row(self, parent, style_key: str):
         current_percent = round(self._overlay_style[style_key] * 100)
 
@@ -554,6 +1124,31 @@ class ConfigWindow(ctk.CTk):
             values=list(self.FONT_WEIGHT_OPTIONS.keys()),
             command=lambda selected_label: self._on_style_value_changed(
                 style_key, self.FONT_WEIGHT_OPTIONS[selected_label]
+            ),
+        )
+        menu.set(current_label)
+        menu.pack(fill="x", pady=(2, 0))
+
+    def _build_animation_row(self, parent, style_key: str):
+        """Mismo patrón que _build_font_weight_row — selector de efecto de
+        aparición (ver SUBTITLE_ANIMATION_OPTIONS)."""
+        current_value = self._overlay_style[style_key]
+        label_by_animation = {value: label for label, value in self.SUBTITLE_ANIMATION_OPTIONS.items()}
+        current_label = label_by_animation.get(current_value, next(iter(self.SUBTITLE_ANIMATION_OPTIONS)))
+
+        row = ctk.CTkFrame(parent, fg_color="transparent")
+        row.pack(fill="x", pady=(8, 0))
+        ctk.CTkLabel(
+            row,
+            text="Efecto de aparición (solo en texto final)",
+            font=ctk.CTkFont(size=12),
+        ).pack(anchor="w")
+
+        menu = ctk.CTkOptionMenu(
+            row,
+            values=list(self.SUBTITLE_ANIMATION_OPTIONS.keys()),
+            command=lambda selected_label: self._on_style_value_changed(
+                style_key, self.SUBTITLE_ANIMATION_OPTIONS[selected_label]
             ),
         )
         menu.set(current_label)
@@ -959,6 +1554,12 @@ class ConfigWindow(ctk.CTk):
             self._stop_mic_test()
         self.mic_test_button.configure(state="disabled")
 
+        # La vista previa manda subtítulos de muestra al mismo overlay que
+        # va a usar la transcripción real — se corta para no mezclar ambos.
+        self._stop_all_previews()
+        for button in self._preview_toggle_buttons:
+            button.configure(state="disabled")
+
         self.start_stop_button.configure(text=self.STARTING_BUTTON_TEXT, state="disabled")
         self.status_label.configure(text="● Iniciando…", text_color=self.IDLE_STATUS_COLOR)
         self._pipeline_controller.start(on_stopped=self._handle_pipeline_stopped)
@@ -993,6 +1594,8 @@ class ConfigWindow(ctk.CTk):
             state="normal",
         )
         self.mic_test_button.configure(state="normal")
+        for button in self._preview_toggle_buttons:
+            button.configure(state="normal")
         if error is not None:
             self.status_label.configure(text=f"● Error: {error}", text_color=self.ERROR_STATUS_COLOR)
         else:
@@ -1006,8 +1609,10 @@ class ConfigWindow(ctk.CTk):
         ):
             return
 
+        self._stop_all_previews()
         if self._mic_level_monitor.is_active:
             self._mic_level_monitor.stop()
         if self._pipeline_controller.is_running:
             self._pipeline_controller.stop()
+        self._pipeline_controller.stop_overlay_server()
         self.destroy()
