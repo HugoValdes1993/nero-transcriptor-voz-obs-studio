@@ -71,11 +71,26 @@ class SpeechTranscriber:
             compute_type = "int8"
 
         self._notify_model_loading(model_name)
-        self.whisper_model = WhisperModel(
-            model_name,
-            device=device,
-            compute_type=compute_type,
-        )
+        try:
+            self.whisper_model = WhisperModel(
+                model_name,
+                device=device,
+                compute_type=compute_type,
+            )
+        except Exception as error:
+            # El chequeo de check_driver_supports_cuda_runtime() (ver
+            # cuda_dll_setup.ensure_cuda_runtime_downloaded_and_registered)
+            # es best-effort — si igual llega hasta acá con un driver
+            # insuficiente/incompatible, CTranslate2 tira un error de bajo
+            # nivel bastante críptico. Se reemplaza por uno accionable.
+            if device == "cuda":
+                raise RuntimeError(
+                    "No se pudo inicializar CUDA para cargar el modelo (driver de NVIDIA "
+                    "desactualizado o incompatible). Actualizá el driver en "
+                    "https://www.nvidia.com/drivers, o desactivá \"Usar aceleración CUDA\" "
+                    f"en la configuración para seguir en CPU. Detalle: {error}"
+                ) from error
+            raise
         # No hace falta un notify_status("") de "ya terminó" acá: hay dos
         # instancias de SpeechTranscriber (final + parcial) y todavía falta
         # que arranque la captura de audio — quien decide cuándo mostrar

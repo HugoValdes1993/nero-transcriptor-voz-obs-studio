@@ -1,0 +1,126 @@
+# Arma el instalador de Windows (ver build.spec / installer/voice_transcriber.iss)
+# y lo publica como GitHub Release.
+#
+# Un solo instalador para todos: con las DLLs de CUDA descargándose bajo
+# demanda en la PC del usuario (ver src/startup/cuda_runtime_downloader.py)
+# ya no hace falta distinguir una variante "CPU" de una "GPU" — el .exe
+# empaquetado pesa una fracción de lo que pesaría con CUDA adentro, así que
+# entra cómodo como un solo asset de GitHub Release (límite: 2GB/archivo).
+#
+# Disparadores:
+#   - push de un tag "v*.*.*" (ej. v1.0.0): build completo + PUBLICA el
+#     release de verdad (como draft, ver el último paso).
+#   - workflow_dispatch (botón "Run workflow" en la pestaña Actions, o
+#     `gh workflow run release.yml`): corre el mismo build para probar que
+#     todo compila, pero el job `publish` no se ejecuta (ver su `if`) — así
+#     se puede validar el pipeline sin crear un release cada vez.
+#
+# Nada de esto necesita instalar nada en tu máquina: Inno Setup se instala
+# solo dentro del runner de GitHub (efímero, se descarta al terminar el job).
+#
+# Firma de código: todavía no hay certificado (en trámite con SignPath para
+# proyectos open source, ver LICENSE). El paso de firma está dejado como
+# TODO comentado en el lugar exacto donde iría.
+#
+# Autor: Nero
+
+name: Release
+
+on:
+  push:
+    tags:
+      - "v*.*.*"
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    name: Build
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Instalar dependencias
+        run: pip install -r requirements.txt -r requirements-build.txt
+
+      - name: Resolver versión desde el tag
+        shell: pwsh
+        run: |
+          $ref = "${{ github.ref_name }}"
+          if ($ref -match '^v(\d+\.\d+\.\d+.*)$') {
+            $version = $Matches[1]
+          } else {
+            $version = "0.0.0-dev"
+          }
+          "APP_VERSION=$version" | Out-File -FilePath $env:GITHUB_ENV -Append
+
+      - name: Empaquetar con PyInstaller
+        run: pyinstaller build.spec --clean
+
+      # TODO (SignPath): una vez aprobada la aplicación, firmar acá
+      # dist\VoiceTranscriber\VoiceTranscriber.exe ANTES de que Inno Setup lo
+      # empaquete — ver signpath/github-action-submit-signing-request.
+
+      - name: Instalar Inno Setup
+        shell: pwsh
+        run: |
+          choco install innosetup -y --no-progress
+          "C:\Program Files (x86)\Inno Setup 6" | Out-File -FilePath $env:GITHUB_PATH -Append
+
+      - name: Compilar el instalador
+        shell: pwsh
+        run: iscc installer\voice_transcriber.iss "/DAppVersion=$env:APP_VERSION"
+
+      # TODO (SignPath): firmar acá installer\Output\VoiceTranscriberSetup.exe
+      # (el Setup.exe ya armado), después de compilarlo y antes de subirlo.
+
+      - name: Calcular checksum
+        shell: pwsh
+        working-directory: installer/Output
+        run: |
+          $hash = (Get-FileHash VoiceTranscriberSetup.exe -Algorithm SHA256).Hash
+          "$hash  VoiceTranscriberSetup.exe" | Out-File -FilePath "VoiceTranscriberSetup.exe.sha256" -Encoding ascii
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: installer
+          path: installer/Output/*
+          if-no-files-found: error
+
+  publish:
+    name: Publicar release
+    needs: build
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: installer
+          path: artifacts
+
+      - uses: softprops/action-gh-release@v2
+        with:
+          name: Voice Transcriber ${{ github.ref_name }}
+          files: artifacts/*
+          body: |
+            ## Voice Transcriber ${{ github.ref_name }}
+
+            `VoiceTranscriberSetup.exe` — instalador único, funciona con o sin
+            GPU NVIDIA. Si activás "Usar aceleración CUDA" en la app y es la
+            primera vez, va a descargar el runtime de CUDA (~1.3GB) solo en ese
+            momento — no hace falta para nada más.
+
+            **Nota sobre Windows SmartScreen**: esta build todavía no tiene
+            firma de código (en trámite, ver el repo). Es normal que Windows
+            muestre "Windows protegió tu PC" la primera vez — click en "Más
+            información" → "Ejecutar de todas formas".
+
+            El checksum SHA256 está en `VoiceTranscriberSetup.exe.sha256`, por
+            si querés verificar que la descarga no se corrompió.
+          draft: true

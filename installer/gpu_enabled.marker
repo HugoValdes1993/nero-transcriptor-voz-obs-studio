@@ -1,0 +1,5 @@
+Este archivo lo copia el instalador SOLO si se dejó tildada la tarea
+"Habilitar aceleración GPU (CUDA)" durante la instalación — ver
+installer/voice_transcriber.iss y src/startup/cuda_availability.py, que
+chequea si este archivo existe junto al .exe para decidir si ofrecer el
+checkbox de CUDA. Su presencia es lo único que importa, no el contenido.

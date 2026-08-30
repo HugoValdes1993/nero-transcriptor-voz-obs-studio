@@ -64,7 +64,7 @@ from src.audio.device_resolver import (
 from src.audio.mic_level_monitor import MicLevelMonitor
 from src.server.pipeline_controller import PipelineController
 from src.startup.app_paths import get_app_root
-from src.startup.cuda_availability import is_nvidia_gpu_available
+from src.startup.cuda_availability import is_nvidia_gpu_available, gpu_unavailability_reason
 from src.status_hub import set_status_listener
 
 # Raíz de la app (repo en dev, carpeta del .exe empaquetado) — ver
@@ -524,6 +524,15 @@ class ConfigWindow(ctk.CTk):
             text_color=self.IDLE_STATUS_COLOR,
         )
         self.status_label.pack(anchor="w")
+
+        # Barra de progreso real para descargas donde se conoce el avance en
+        # bytes (ver status_hub.notify_status y _apply_download_status) —
+        # arranca oculta (sin .pack todavía) y solo se muestra mientras dura
+        # una de esas descargas. No todas las notificaciones traen progreso
+        # numérico (ej. la del modelo de Whisper no lo tiene), en esos casos
+        # se muestra solo el texto del status_label, sin esta barra.
+        self.download_progress_bar = ctk.CTkProgressBar(header)
+        self.download_progress_bar.set(0)
 
     def _build_content_area(self):
         self.tabview = ctk.CTkTabview(self)
@@ -1494,11 +1503,7 @@ class ConfigWindow(ctk.CTk):
             )
             hint_color = self.IDLE_STATUS_COLOR
         else:
-            hint_text = (
-                "No se detectó una GPU NVIDIA compatible con CUDA en este equipo "
-                "— esta opción no está disponible y la transcripción va a correr "
-                "en CPU (más lenta)."
-            )
+            hint_text = f"{gpu_unavailability_reason()} La transcripción va a correr en CPU (más lenta)."
             hint_color = self.ERROR_STATUS_COLOR
 
         self.cuda_hint_label = ctk.CTkLabel(
@@ -1614,22 +1619,29 @@ class ConfigWindow(ctk.CTk):
         )
         self.status_label.configure(text="● Transcribiendo", text_color=self.RUNNING_STATUS_COLOR)
 
-    def _on_download_status(self, message: str):
+    def _on_download_status(self, message: str, progress: float | None = None):
         """
         Listener registrado en status_hub (ver __init__) — lo puede llamar
         el hilo de fondo del pipeline (carga de modelos de Whisper,
-        instalación de paquetes de Argos Translate), nunca el hilo de la
-        GUI, así que hay que reencolar con after(0, ...) antes de tocar
-        cualquier widget de Tkinter.
+        instalación de paquetes de Argos Translate, descarga del runtime de
+        CUDA), nunca el hilo de la GUI, así que hay que reencolar con
+        after(0, ...) antes de tocar cualquier widget de Tkinter.
         """
         if self._is_closing:
             return
-        self.after(0, lambda: self._apply_download_status(message))
+        self.after(0, lambda: self._apply_download_status(message, progress))
 
-    def _apply_download_status(self, message: str):
+    def _apply_download_status(self, message: str, progress: float | None = None):
         if message:
             self.status_label.configure(text=f"● {message}", text_color=self.IDLE_STATUS_COLOR)
+            if progress is not None:
+                self.download_progress_bar.set(progress)
+                self.download_progress_bar.pack(fill="x", pady=(4, 0))
+            else:
+                self.download_progress_bar.pack_forget()
             return
+
+        self.download_progress_bar.pack_forget()
 
         # "" = ya terminó lo que se estaba avisando (ver
         # status_hub.notify_status) — se restaura "Transcribiendo" en vez de

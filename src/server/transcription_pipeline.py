@@ -31,11 +31,13 @@ from config.settings import (
     PROFANITY_FILTER_ENABLED,
     DEBUG_SAVE_UTTERANCE_WAV_ENABLED,
 )
+from config.user_config import get_whisper_device
 from src.audio.stream_capture import AudioStreamCapture
 from src.audio.debug_dump import save_utterance_debug_wav
 from src.speech.voice_activity_detector import VoiceActivityDetector
 from src.speech.utterance_segmenter import UtteranceSegmenter
 from src.speech.speech_transcriber import SpeechTranscriber
+from src.startup.cuda_dll_setup import ensure_cuda_runtime_downloaded_and_registered
 from src.translation.translator import translate_text
 from src.text_filters.profanity_filter import censor_text
 from src.logging_utils import ComponentLogger
@@ -59,6 +61,13 @@ class TranscriptionPipeline:
         # modelos (que puede ser mucho más si hay que descargarlos la
         # primera vez — ver SpeechTranscriber._notify_model_loading).
         self._on_ready = on_ready
+
+        # Las DLLs de CUDA se descargan bajo demanda (~1.3GB, ver
+        # src/startup/cuda_runtime_downloader.py) — se resuelve UNA sola vez
+        # acá, antes de instanciar cualquier SpeechTranscriber (hay dos: final
+        # y parcial, y ambos leerían "cuda" del mismo get_whisper_device()).
+        if get_whisper_device() == "cuda":
+            ensure_cuda_runtime_downloaded_and_registered()
 
         self._audio_capture = AudioStreamCapture()
         self._voice_activity_detector = VoiceActivityDetector()

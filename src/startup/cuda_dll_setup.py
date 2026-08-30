@@ -1,71 +1,58 @@
 """
 En Windows, CTranslate2 (backend de faster-whisper) busca cublas64_12.dll y las
-DLLs de cuDNN en el PATH del proceso. Instalar el CUDA Toolkit completo de NVIDIA
-es una opción, pero es pesado e innecesario: los paquetes pip nvidia-cublas-cu12
-y nvidia-cudnn-cu12 ya traen esas DLLs. Este módulo las registra en el proceso
-actual con os.add_dll_directory, sin tocar el PATH del sistema operativo.
+DLLs de cuDNN en el PATH del proceso. Estas DLLs NO se empaquetan con la app
+(pesan ~1.3GB en total) — se descargan bajo demanda la primera vez que el
+usuario activa aceleración CUDA (ver cuda_runtime_downloader.py) a un caché
+en %LOCALAPPDATA%, y este módulo las registra en el proceso actual con
+os.add_dll_directory, sin tocar el PATH del sistema operativo.
 
-Debe importarse ANTES que faster_whisper (o cualquier módulo que dependa de él)
-— por eso main.py lo importa como primera línea, antes que el resto del pipeline.
+Dos funciones con responsabilidades distintas:
+
+- register_available_cuda_dll_directories(): solo ESCANEA el caché de
+  cuda_runtime_downloader y registra lo que ya esté ahí — barato, sin red.
+  Debe importarse/llamarse ANTES que faster_whisper (o cualquier módulo que
+  dependa de él) — por eso main.py la llama como primera línea, antes que el
+  resto del pipeline. Si el usuario nunca activó CUDA todavía, esto
+  simplemente no encuentra nada y no hace nada (no es un error).
+
+- ensure_cuda_runtime_downloaded_and_registered(): si el escaneo de arriba
+  no encontró nada, dispara la descarga (puede tardar minutos) y vuelve a
+  registrar. Se llama UNA sola vez, desde
+  src/server/transcription_pipeline.TranscriptionPipeline.__init__, y SOLO
+  si el dispositivo elegido es "cuda" — nunca al arrancar la app sin más.
 """
 
 import os
-import sys
 
 from src.logging_utils import ComponentLogger
+from src.startup.cuda_availability import check_driver_supports_cuda_runtime
+from src.startup.cuda_runtime_downloader import (
+    download_and_extract_cuda_runtime,
+    get_cuda_runtime_cache_dir,
+    is_cuda_runtime_cached,
+)
 
 logger = ComponentLogger("CUDA Setup")
 
 
-def register_cuda_dll_directories():
-    if sys.platform != "win32":
-        return  # En Linux, estas DLLs se resuelven vía LD_LIBRARY_PATH automáticamente
+def _register_dll_directories_under(root_directory: str) -> bool:
+    """Registra con os.add_dll_directory cada subcarpeta de `root_directory`
+    que tenga una carpeta bin/, y las antepone también al PATH del proceso.
+    Devuelve True si registró al menos una."""
+    if not os.path.isdir(root_directory):
+        return False
 
-    try:
-        import nvidia
-    except ImportError:
-        logger.warning(
-            "No se encontró el paquete 'nvidia'. Instalar con: "
-            "pip install nvidia-cublas-cu12 nvidia-cudnn-cu12"
-        )
-        return
-
-    # 'nvidia' es un namespace package (sin __init__.py), por lo que no tiene
-    # __file__; hay que usar __path__, que sí existe para namespace packages.
-    nvidia_search_paths = list(getattr(nvidia, "__path__", []))
-    if not nvidia_search_paths:
-        logger.warning("El paquete 'nvidia' no expone rutas de búsqueda (__path__ vacío).")
-        return
-
-    nvidia_packages_root_directory = nvidia_search_paths[0]
-
-    # cublas64_12.dll depende en cadena de otras DLLs de CUDA runtime
-    # (nvrtc, cuda_runtime, etc.), cada una en su propio subpaquete pip.
-    # Registramos TODAS las carpetas bin bajo nvidia/*, no solo cublas/cudnn,
-    # para que Windows pueda resolver toda la cadena de dependencias.
-    registered_any_directory = False
     dll_directories_to_prepend_to_path = []
 
-    for subpackage_name in sorted(os.listdir(nvidia_packages_root_directory)):
-        subpackage_directory = os.path.join(nvidia_packages_root_directory, subpackage_name)
-        if not os.path.isdir(subpackage_directory):
-            continue
+    for subfolder_name in sorted(os.listdir(root_directory)):
+        bin_directory = os.path.join(root_directory, subfolder_name, "bin")
+        if os.path.isdir(bin_directory):
+            os.add_dll_directory(bin_directory)
+            dll_directories_to_prepend_to_path.append(bin_directory)
+            logger.info(f"Registrado: {bin_directory}")
 
-        subpackage_bin_directory = os.path.join(subpackage_directory, "bin")
-        if os.path.isdir(subpackage_bin_directory):
-            os.add_dll_directory(subpackage_bin_directory)
-            dll_directories_to_prepend_to_path.append(subpackage_bin_directory)
-            logger.info(f"Registrado: {subpackage_bin_directory}")
-            registered_any_directory = True
-        else:
-            logger.info(
-                f"'{subpackage_name}' no tiene carpeta 'bin' "
-                f"(contenido: {os.listdir(subpackage_directory)})"
-            )
-
-    if not registered_any_directory:
-        logger.warning("No se registró ninguna carpeta bin de CUDA.")
-        return
+    if not dll_directories_to_prepend_to_path:
+        return False
 
     # CRÍTICO: el binario compilado (.pyd) de CTranslate2 resuelve sus DLLs
     # dependientes mediante enlace dinámico estándar de Windows en tiempo de
@@ -75,7 +62,36 @@ def register_cuda_dll_directories():
     os.environ["PATH"] = (
         os.pathsep.join(dll_directories_to_prepend_to_path) + os.pathsep + os.environ.get("PATH", "")
     )
-    logger.success("Carpetas de CUDA registradas y antepuestas al PATH del proceso.")
+    return True
 
 
-register_cuda_dll_directories()
+def register_available_cuda_dll_directories():
+    if os.name != "nt":
+        return  # En Linux, estas DLLs se resuelven vía LD_LIBRARY_PATH automáticamente
+
+    if _register_dll_directories_under(get_cuda_runtime_cache_dir()):
+        logger.success("Carpetas de CUDA registradas y antepuestas al PATH del proceso.")
+
+
+def ensure_cuda_runtime_downloaded_and_registered():
+    """
+    Llamar SOLO cuando get_whisper_device() ya resolvió "cuda" — descarga el
+    runtime si hace falta (ver cuda_runtime_downloader.download_and_extract_cuda_runtime,
+    que reporta progreso vía src/status_hub.notify_status) y lo registra.
+    """
+    if not is_cuda_runtime_cached():
+        # Chequeo barato ANTES de arrancar una descarga de ~1.3GB — evita hacer
+        # esperar al usuario toda la descarga para enterarse recién al final
+        # de que su driver de NVIDIA es muy viejo (ver su docstring).
+        check_driver_supports_cuda_runtime()
+        logger.info("Runtime de CUDA no encontrado en caché — descargando (primera vez, ~1.3GB)...")
+        download_and_extract_cuda_runtime()
+
+    register_available_cuda_dll_directories()
+
+
+# Se ejecuta al importar el módulo (ver main.py, que lo importa como primera
+# línea) — mismo patrón que antes: registra lo que YA esté cacheado de una
+# corrida anterior, sin descargar nada. Si el usuario nunca usó CUDA todavía,
+# no encuentra nada y no hace nada.
+register_available_cuda_dll_directories()

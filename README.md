@@ -21,9 +21,10 @@ voice-transcriber/
 └── src/
     ├── logging_utils.py          # logs a consola con formato consistente
     ├── startup/
-    │   ├── cuda_dll_setup.py     # registra las DLLs de CUDA en Windows
-    │   ├── cuda_availability.py  # detecta si hay GPU NVIDIA disponible
-    │   └── app_paths.py          # raíz de la app, en dev y empaquetada (.exe)
+    │   ├── cuda_dll_setup.py           # registra las DLLs de CUDA en Windows
+    │   ├── cuda_runtime_downloader.py  # descarga esas DLLs bajo demanda (~1.3GB)
+    │   ├── cuda_availability.py        # detecta si hay GPU NVIDIA disponible
+    │   └── app_paths.py                # raíz de la app, en dev y empaquetada (.exe)
     ├── gui/
     │   └── config_window.py      # ventana de configuración + control de arranque/detención
     ├── audio/
@@ -55,8 +56,13 @@ completo y conecta unos con otros.
 ## Requisitos
 
 - Python 3.10+
-- GPU NVIDIA con drivers CUDA instalados (probado para 4-6 GB de VRAM)
 - Micrófono configurado como dispositivo de entrada del sistema
+- GPU NVIDIA (probado para 4-6 GB de VRAM) — opcional pero muy recomendada
+  para velocidad; sin ella la transcripción corre en CPU, más lenta. Los
+  drivers de CUDA (cuBLAS/cuDNN, ~1.3GB) NO hace falta instalarlos a mano: la
+  app los descarga sola la primera vez que activás "Usar aceleración CUDA"
+  en la ventana de configuración (ver `src/startup/cuda_runtime_downloader.py`)
+  — solo necesitás tener instalado el driver normal de NVIDIA.
 
 ## Instalación
 
@@ -227,11 +233,33 @@ pyinstaller build.spec --clean
 ```
 
 El resultado queda en `dist/VoiceTranscriber/` — esa carpeta COMPLETA es lo
-que se distribuye (varios GB, por los paquetes de CUDA), no solo el `.exe`
-suelto. `user_config.json` y los dos overlays (`overlay/*.html`, para pegar
-en OBS como "Local file") quedan al lado del `.exe` dentro de esa misma
-carpeta, y son estables entre sesiones — por eso el build es "onedir" y no
-"onefile".
+que se distribuye, no solo el `.exe` suelto. `user_config.json` y los dos
+overlays (`overlay/*.html`, para pegar en OBS como "Local file") quedan al
+lado del `.exe` dentro de esa misma carpeta, y son estables entre sesiones —
+por eso el build es "onedir" y no "onefile". Las DLLs de CUDA NO están acá
+(ver "Requisitos" arriba): por eso este build pesa una fracción de lo que
+pesaría con ellas adentro.
+
+### Instalador y releases (GitHub Actions)
+
+`installer/voice_transcriber.iss` (Inno Setup) arma un instalador de verdad
+(acceso directo, desinstalador) a partir de ese mismo `dist/VoiceTranscriber/`.
+Durante la instalación se puede elegir si habilitar la aceleración GPU
+(tildado por default) — desmarcarla hace que la app nunca ofrezca el
+checkbox de CUDA, sin importar el hardware (ver
+`src/startup/cuda_availability.py`). No hace falta instalar Inno Setup a
+mano: `.github/workflows/release.yml`
+hace todo el proceso (build + instalador + checksum) solo, en un runner de
+GitHub, y publica el resultado como GitHub Release (como borrador, para
+revisar antes de publicarlo de verdad) apenas se pushea un tag `vX.Y.Z`:
+
+```bash
+git tag v1.0.0
+git push origin v1.0.0
+```
+
+También se puede disparar el mismo build sin crear un release (para probar
+que compila) desde la pestaña "Actions" de GitHub, con "Run workflow".
 
 ## Próximos pasos (no incluidos todavía)
 

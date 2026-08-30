@@ -28,14 +28,13 @@ Decisiones que no son obvias mirando el resultado:
   (ver comentarios en config_window.py), así que ocultarla le saca
   información al streamer, no soluciona nada.
 
-- hiddenimports fuerza nvidia.cublas / nvidia.cudnn / nvidia.cuda_runtime /
-  nvidia.cuda_nvrtc (los cuatro paquetes CUDA de requirements.txt): cada uno
-  tiene un hook dedicado en pyinstaller-hooks-contrib que copia sus DLLs,
-  pero un hook solo se dispara si PyInstaller detecta el import en su
-  análisis estático — y src/startup/cuda_dll_setup.py hace `import nvidia`
-  a secas y enumera subcarpetas en tiempo de ejecución (ver ese archivo),
-  así que sin forzarlos acá esos cuatro paquetes quedarían afuera del build
-  y la aceleración CUDA fallaría en el .exe aunque funcione en código fuente.
+- Las DLLs de CUDA (nvidia-cublas-cu12/nvidia-cudnn-cu12/etc.) NO se
+  empaquetan acá — pesan ~1.3GB y se descargan bajo demanda en
+  %LOCALAPPDATA% la primera vez que se activa aceleración CUDA (ver
+  src/startup/cuda_runtime_downloader.py). Por eso no hace falta ningún
+  hiddenimports/collect_all relacionado con "nvidia": ese paquete
+  directamente no está instalado en el entorno de build (no está en
+  requirements.txt), así que PyInstaller ni lo ve.
 
 - collect_all para customtkinter/ctranslate2/faster_whisper/argostranslate:
   paquetes que cargan sus propias DLLs o assets (temas JSON de customtkinter,
@@ -52,12 +51,7 @@ from PyInstaller.utils.hooks import collect_all
 
 APP_NAME = "VoiceTranscriber"
 
-hiddenimports = [
-    "nvidia.cublas",
-    "nvidia.cudnn",
-    "nvidia.cuda_runtime",
-    "nvidia.cuda_nvrtc",
-]
+hiddenimports = []
 
 datas = [
     (os.path.join("overlay", "obs_overlay_original.html"), "overlay"),
