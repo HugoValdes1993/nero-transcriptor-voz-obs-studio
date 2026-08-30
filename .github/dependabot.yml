@@ -1,0 +1,38 @@
+# Actualizaciones automáticas de dependencias vía pull request.
+#
+# Dos ecosistemas cubiertos:
+#   - pip: requirements.txt (runtime) y requirements-build.txt (PyInstaller),
+#     ambos en la raíz del repo.
+#   - github-actions: las actions usadas en .github/workflows/release.yml
+#     (checkout, setup-python, upload-artifact, download-artifact,
+#     action-gh-release).
+#
+# target-branch queda en "develop" y no en "main": según el GitFlow del
+# proyecto (ver README, sección "Flujo de trabajo"), main solo recibe código
+# ya integrado desde una rama release/hotfix — un PR de Dependabot directo a
+# main rompería ese flujo.
+#
+# Autor: Nero
+
+version: 2
+updates:
+  - package-ecosystem: "pip"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "deps"
+    labels:
+      - "dependencies"
+
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    target-branch: "develop"
+    schedule:
+      interval: "weekly"
+    commit-message:
+      prefix: "ci"
+    labels:
+      - "dependencies"
+      - "ci"
