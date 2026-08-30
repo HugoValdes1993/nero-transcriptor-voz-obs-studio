@@ -46,7 +46,7 @@ AUDIO_INPUT_DEVICE_NAME = "DualSense Wireless Controller"
 # un micrófono sin ese problema terminaría capturando por DirectSound sin
 # necesidad, perdiendo calidad. Cualquier dispositivo que no esté en este
 # mapa usa el host API que el resolver elija automáticamente (WASAPI si está
-# disponible). Agrega una entrada acá solo si confirmás que un dispositivo
+# disponible). Agrega una entrada aquí solo si confirmas que un dispositivo
 # puntual falla o suena peor con WASAPI.
 AUDIO_INPUT_HOST_API_OVERRIDES = {
     "DualSense Wireless Controller": "Windows DirectSound",

@@ -142,7 +142,7 @@ def check_driver_supports_cuda_runtime():
         found = ".".join(map(str, driver_max_version))
         raise RuntimeError(
             f"El driver de NVIDIA instalado soporta como máximo CUDA {found}, pero esta "
-            f"app necesita CUDA {required}+. Actualizá el driver en "
-            f"https://www.nvidia.com/drivers y volvé a intentar, o desactivá "
+            f"app necesita CUDA {required}+. Actualiza el driver en "
+            f"https://www.nvidia.com/drivers y vuelve a intentar, o desactiva "
             f'"Usar aceleración CUDA" para seguir en CPU.'
         )

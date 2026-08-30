@@ -175,7 +175,7 @@ def _download_wheel_to(
         os.remove(part_path)
         raise RuntimeError(
             f"El archivo descargado de {progress_label} no coincide con el checksum esperado "
-            f"(descarga corrupta o interrumpida) — reintentá."
+            f"(descarga corrupta o interrumpida) — reintenta."
         )
 
     os.replace(part_path, destination_path)

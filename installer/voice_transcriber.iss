@@ -57,7 +57,7 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 ; este proyecto tienen GPU NVIDIA y la quieren usar. Desmarcarla hace que
 ; src/startup/cuda_availability.py nunca ofrezca el checkbox de CUDA en la
 ; app, sin importar el hardware — ver gpu_enabled.marker más abajo.
-Name: "gpu_support"; Description: "Habilitar aceleración GPU (CUDA) — recomendado si tenés una placa NVIDIA"; GroupDescription: "Rendimiento:"
+Name: "gpu_support"; Description: "Habilitar aceleración GPU (CUDA) — recomendado si tienes una placa NVIDIA"; GroupDescription: "Rendimiento:"
 
 [Files]
 ; Todo el contenido de la carpeta onedir de PyInstaller (el .exe + todas las

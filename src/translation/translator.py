@@ -67,11 +67,11 @@ def _ensure_translation_package_installed(source_language: str, target_language:
     # Este paso puede pasar bastante después de que la transcripción ya
     # está "Escuchando micrófono" (se dispara recién con la primera frase
     # que hay que traducir) — a diferencia de la carga del modelo de
-    # Whisper (ver SpeechTranscriber), acá SÍ hace falta el notify_status("")
+    # Whisper (ver SpeechTranscriber), aquí SÍ hace falta el notify_status("")
     # de "ya terminó" al final, para no dejar este mensaje pisando
     # "Transcribiendo" para siempre. El try/finally lo asegura tanto si
     # esto termina bien como si falla (paquete inexistente, sin internet,
-    # etc.) — hoy un fallo acá termina matando todo el pipeline igual (ver
+    # etc.) — hoy un fallo aquí termina matando todo el pipeline igual (ver
     # PipelineController._run), así que _reset_to_idle ya pisaría el
     # mensaje con el error de todos modos, pero no vale la pena dejar este
     # notify_status descalzado para el día que ese manejo de errores cambie.

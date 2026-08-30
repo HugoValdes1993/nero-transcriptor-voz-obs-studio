@@ -3,7 +3,7 @@ Maneja las conexiones WebSocket de los overlays (el Browser Source de OBS)
 y el envío de mensajes a todos los que estén conectados.
 
 Es la única pieza del proyecto que sabe de WebSockets — el resto del
-pipeline (TranscriptionPipeline) solo le pide a esta clase "mandá este
+pipeline (TranscriptionPipeline) solo le pide a esta clase "envía este
 texto", sin conocer los detalles de la conexión. Esto separa la
 responsabilidad de "cómo se transcribe" de la de "cómo se entrega al
 overlay" (principio de responsabilidad única).
