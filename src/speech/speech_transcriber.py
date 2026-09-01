@@ -29,6 +29,7 @@ from config.settings import (
     MIN_UTTERANCE_RMS_ENERGY,
 )
 from config.user_config import get_whisper_device, get_whisper_source_language
+from src.startup.cuda_availability import gpu_supports_int8_compute
 from src.speech.hallucination_filter import is_known_hallucination
 from src.logging_utils import ComponentLogger
 from src.status_hub import notify_status
@@ -69,6 +70,20 @@ class SpeechTranscriber:
                 f"'{compute_type}' (float16 requiere GPU)."
             )
             compute_type = "int8"
+
+        # En GPUs Blackwell (RTX 50xx) los kernels INT8 de CTranslate2 están
+        # deshabilitados y devuelven resultados corruptos en vez de fallar
+        # limpio (ver gpu_supports_int8_compute) — se ve como transcripción
+        # y traducción que "andan" pero degeneran en alucinaciones
+        # repetitivas. float16 puro no usa esos kernels y esta GPU tiene de
+        # sobra VRAM para correrlo sin la cuantización int8.
+        if device == "cuda" and "int8" in compute_type and not gpu_supports_int8_compute():
+            logger.warning(
+                f"GPU Blackwell detectada: usando compute_type='float16' en vez de "
+                f"'{compute_type}' (los kernels INT8 de CTranslate2 están deshabilitados "
+                f"en esta arquitectura y producen resultados incorrectos, no un error limpio)."
+            )
+            compute_type = "float16"
 
         self._notify_model_loading(model_name)
         try:
