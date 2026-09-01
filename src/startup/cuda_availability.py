@@ -97,6 +97,47 @@ def gpu_unavailability_reason() -> str:
 
 
 @lru_cache(maxsize=1)
+def gpu_supports_int8_compute() -> bool:
+    """
+    False en GPUs Blackwell de consumo (RTX 50xx, compute capability 12.x):
+    CTranslate2 >=4.6.2 deshabilitó los kernels INT8 para sm120 ("Disable
+    INT8 for sm120 - Blackwell GPUs", #1937) porque producen resultados
+    numéricamente incorrectos ahí, no un error limpio — en la práctica esto
+    se ve como transcripción/traducción que "andan" pero degeneran en
+    alucinaciones repetitivas (ej. la misma palabra en loop), no como un
+    crash. compute_type="int8_float16" (el default de fábrica, ver
+    WHISPER_COMPUTE_TYPE en config/settings.py) usa esos kernels, así que
+    SpeechTranscriber debe evitarlo en este hardware — ver el fallback en
+    su __init__.
+
+    Se lee vía `nvidia-smi --query-gpu=compute_cap`, que devuelve
+    directamente la compute capability (ej. "12.0") sin tener que adivinar
+    a partir del nombre comercial de la tarjeta. True si no se pudo
+    determinar (no bloquear una ruta rápida por una lectura ambigua).
+    """
+    nvidia_smi_path = shutil.which("nvidia-smi")
+    if nvidia_smi_path is None:
+        return True
+
+    try:
+        result = subprocess.run(
+            [nvidia_smi_path, "--query-gpu=compute_cap", "--format=csv,noheader"],
+            capture_output=True,
+            text=True,
+            timeout=5,
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return True
+
+    match = re.search(r"(\d+)\.(\d+)", result.stdout)
+    if match is None:
+        return True
+
+    compute_capability = (int(match.group(1)), int(match.group(2)))
+    return compute_capability < (12, 0)
+
+
+@lru_cache(maxsize=1)
 def _driver_max_cuda_version() -> tuple[int, int] | None:
     """
     Best-effort: lee la versión máxima de CUDA que soporta el driver
