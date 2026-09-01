@@ -2,6 +2,14 @@
 # propósito: se descargan solas la primera vez que se activa "Usar
 # aceleración CUDA" — ver src/startup/cuda_runtime_downloader.py.
 faster-whisper>=1.0.0
+# Pin explícito aunque sea dependencia transitiva de faster-whisper/argostranslate
+# (que solo exigen ctranslate2>=4.0,<5): 4.6.2 es la primera versión consciente
+# de GPUs Blackwell (RTX 50xx, compute capability sm120) — antes de esa versión
+# el fallback a compute_type "float16" en src/speech/speech_transcriber.py
+# (ver gpu_supports_int8_compute en src/startup/cuda_availability.py) no tiene
+# garantía de evitar el problema real. Sin este piso, un pip install en otra
+# máquina/momento podría resolver una ctranslate2 más vieja sin avisar.
+ctranslate2>=4.6.2
 torch>=2.13.0
 torchaudio>=2.1.0
 sounddevice>=0.4.6
