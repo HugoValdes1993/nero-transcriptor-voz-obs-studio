@@ -147,6 +147,13 @@ class TranscriptionPipeline:
             self._maybe_emit_partial()
             return
 
+        # Ver el docstring de VoiceActivityDetector.reset(): sin esto, el
+        # estado interno de la RNN de Silero se arrastra indefinidamente
+        # durante toda la sesión y la detección de voz se va degradando con
+        # el tiempo (la app "deja de escuchar" al volumen normal después de
+        # un rato). Se resetea acá, mismo punto en el que ya se resetea
+        # UtteranceSegmenter, porque la frase siguiente arranca de cero.
+        self._voice_activity_detector.reset()
         self._last_broadcast_partial_text = ""  # la frase que viene empieza sin parcial previo
         self._emit_final(closed_utterance)
 

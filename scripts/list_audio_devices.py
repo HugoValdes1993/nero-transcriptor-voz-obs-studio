@@ -8,10 +8,13 @@ entrada equivocada (WDM-KS) hace que el dispositivo se abra en modo
 exclusivo real y bloquee otras apps (ej. OBS) sin avisar: OBS lo sigue
 viendo "conectado" pero el nivel de audio se queda en 0.
 
-Usar el NOMBRE del dispositivo (marcado abajo como "recomendado") en
-AUDIO_INPUT_DEVICE_NAME dentro de config/settings.py — no hace falta
-elegir el índice a mano, src/audio/device_resolver.py ya prioriza WASAPI
-automáticamente entre las entradas que compartan ese nombre.
+El dispositivo de entrada se elige desde el selector de "Dispositivo de
+entrada (micrófono)" en la ventana de configuración de la app (se guarda en
+user_config.json) — no hace falta editar código ni elegir el índice a mano,
+src/audio/device_resolver.py ya prioriza WASAPI automáticamente entre las
+entradas que compartan nombre. Este script es solo para diagnóstico: ver qué
+nombre exacto reporta Windows para cada dispositivo, y confirmar si su mejor
+entrada disponible es WDM-KS (no usable, ver advertencia abajo).
 
 Ejecutar con: python scripts/list_audio_devices.py (desde la raíz del proyecto)
 """
@@ -61,8 +64,8 @@ for device_name, entries in devices_by_name.items():
     print()
 
 print(
-    "Para configurar: copia el nombre del dispositivo (sin corchetes) en "
-    "AUDIO_INPUT_DEVICE_NAME dentro de config/settings.py. No hace falta "
-    "el índice numérico ni elegir el host API a mano — el resolver ya prioriza "
-    "WASAPI automáticamente."
+    "Para configurar: elegí el dispositivo marcado como \"recomendado\" desde "
+    "el selector de micrófono en la ventana de configuración de la app. No "
+    "hace falta el índice numérico ni elegir el host API a mano — el "
+    "resolver ya prioriza WASAPI automáticamente."
 )

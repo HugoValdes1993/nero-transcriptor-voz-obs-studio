@@ -16,6 +16,28 @@ usuario que no instaló `argostranslate` puede seguir usando el resto del
 pipeline sin traducción sin que esto rompa nada.
 """
 
+import os
+import zlib
+
+# Fuerza a Argos Translate a NO cuantizar en INT8 en CPU. Por defecto
+# argostranslate.settings.compute_type es "auto", que en casi cualquier CPU
+# moderna resuelve a "int8" (ver argostranslate/settings.py) — y hay
+# antecedentes documentados de kernels INT8 de CTranslate2 en CPU que
+# corrompen la salida en ciertas CPUs puntuales, con el mismo síntoma que un
+# loop de repetición sin sentido en vez de un error limpio (ver
+# https://github.com/argosopentech/argos-translate/issues/197 — se arregló
+# recién en CTranslate2 2.10.1 para ESE caso puntual, pero el patrón
+# "CPU + cuantización INT8 -> texto degenerado" no tiene garantía de estar
+# erradicado para siempre en cualquier CPU). Argos Translate corre SIEMPRE en
+# CPU (nunca se toca ARGOS_DEVICE_TYPE en este proyecto), sin relación con si
+# Whisper usa GPU o no — este env var hay que fijarlo ANTES de importar
+# argostranslate (argostranslate.settings lo lee una sola vez al importarse),
+# por eso está a nivel de módulo. float32 no usa esos kernels; el costo de
+# latencia es irrelevante acá porque la traducción corre una sola vez por
+# frase final, no en tiempo real como Whisper.
+os.environ.setdefault("ARGOS_COMPUTE_TYPE", "float32")
+
+from config.settings import TRANSLATION_COMPRESSION_RATIO_THRESHOLD
 from config.user_config import get_whisper_source_language, get_translation_target_language
 from src.logging_utils import ComponentLogger
 from src.status_hub import notify_status
@@ -104,13 +126,40 @@ def _ensure_translation_package_installed(source_language: str, target_language:
     _translation_package_ready_for_pair = requested_pair
 
 
+def _is_degenerate_repetition(text: str) -> bool:
+    """
+    Detecta si `text` es un loop de repetición (ej. "mainstreammainstream"
+    encadenado) — un fallo de decodificación observado en los modelos de
+    Argos Translate/CTranslate2 con ciertos textos de entrada, sobre todo
+    cuando el texto original ya viene con errores de la transcripción. A
+    diferencia de faster-whisper (ver WHISPER_COMPRESSION_RATIO_THRESHOLD),
+    argostranslate.translate.translate() no expone repetition_penalty ni
+    no_repeat_ngram_size para evitar el loop en el momento de generarlo, así
+    que se detecta después con el mismo criterio: texto repetitivo comprime
+    mucho mejor que texto natural.
+
+    Requiere un mínimo de longitud para que el ratio sea confiable — un
+    texto corto y legítimo (ej. "sí") también comprime mal por puro overhead
+    del formato, sin que eso indique un loop.
+    """
+    encoded_text = text.encode("utf-8")
+    if len(encoded_text) < 32:
+        return False
+
+    compression_ratio = len(encoded_text) / len(zlib.compress(encoded_text))
+    return compression_ratio > TRANSLATION_COMPRESSION_RATIO_THRESHOLD
+
+
 def translate_text(original_text: str) -> str:
     """
     Traduce `original_text` según el flujo elegido en la GUI (ver
     config/user_config.get_whisper_source_language /
     get_translation_target_language). Retorna cadena vacía si
     `original_text` está vacío (evita instalar/consultar el paquete
-    innecesariamente).
+    innecesariamente), si la traducción falla, o si el resultado parece un
+    loop de repetición (ver _is_degenerate_repetition) — en ninguno de esos
+    casos vale la pena tirar abajo todo el pipeline de transcripción por un
+    problema puntual de esta frase.
     """
     if not original_text:
         return ""
@@ -122,4 +171,18 @@ def translate_text(original_text: str) -> str:
 
     import argostranslate.translate
 
-    return argostranslate.translate.translate(original_text, source_language, target_language)
+    try:
+        translated_text = argostranslate.translate.translate(
+            original_text, source_language, target_language
+        )
+    except Exception as error:
+        logger.warning(f"Fallo al traducir {original_text!r}: {error}. Se omite la traducción.")
+        return ""
+
+    if _is_degenerate_repetition(translated_text):
+        logger.warning(
+            f"Traducción descartada por parecer un loop de repetición: {translated_text!r}"
+        )
+        return ""
+
+    return translated_text

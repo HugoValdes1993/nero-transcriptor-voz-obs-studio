@@ -43,10 +43,8 @@ tanto para usuarios nuevos como para los que ya tenían un JSON viejo.
 import json
 import os
 
-from config.settings import (
-    AUDIO_INPUT_DEVICE_NAME as DEFAULT_AUDIO_INPUT_DEVICE_NAME,
-    WHISPER_SOURCE_LANGUAGE as DEFAULT_WHISPER_SOURCE_LANGUAGE,
-)
+from config.settings import WHISPER_SOURCE_LANGUAGE as DEFAULT_WHISPER_SOURCE_LANGUAGE
+from src.audio.device_resolver import get_default_input_device_name
 from src.logging_utils import ComponentLogger
 from src.startup.app_paths import get_app_root
 from src.startup.cuda_availability import is_nvidia_gpu_available
@@ -124,14 +122,42 @@ OVERLAY_STYLE_DEFAULTS = {
     "translated_animation": "none",
 }
 
+# Propiedades de tamaño/tipografía que el usuario ajusta a mano para hacer
+# coincidir cada zona de texto con el lienzo que ya tiene reservado en su
+# escena de OBS. Ningún preset de estilo (de fábrica o guardado por el
+# usuario) debe pisarlas jamás — ver apply_overlay_style_preset y
+# save_overlay_style_preset. Un preset es solo un "look" (color, fondo,
+# contorno, animación); el tamaño/posición es una personalización aparte,
+# independiente del look elegido.
+STYLE_PRESET_PRESERVED_KEYS = (
+    "original_width_px",
+    "original_height_px",
+    "original_font_family",
+    "original_font_size_px",
+    "translated_width_px",
+    "translated_height_px",
+    "translated_font_family",
+    "translated_font_size_px",
+)
+
+# Subconjunto de OVERLAY_STYLE_DEFAULTS que sí es "look" (todo lo que no
+# esté en STYLE_PRESET_PRESERVED_KEYS) — variable auxiliar para no repetir
+# esta resta en cada preset de abajo.
+_STYLE_PRESET_LOOK_DEFAULTS = {
+    key: value
+    for key, value in OVERLAY_STYLE_DEFAULTS.items()
+    if key not in STYLE_PRESET_PRESERVED_KEYS
+}
+
 # Looks completos preconfigurados, de fábrica (no se guardan en
 # user_config.json, no se pueden borrar ni sobrescribir — ver
 # is_built_in_style_preset). Cada uno es un override parcial sobre
-# OVERLAY_STYLE_DEFAULTS, para no repetir las claves que no cambian.
+# _STYLE_PRESET_LOOK_DEFAULTS, para no repetir las claves que no cambian —
+# y para que jamás incluyan una clave de STYLE_PRESET_PRESERVED_KEYS.
 BUILT_IN_STYLE_PRESETS = {
-    "Clásico": dict(OVERLAY_STYLE_DEFAULTS),
+    "Clásico": dict(_STYLE_PRESET_LOOK_DEFAULTS),
     "Alto contraste": {
-        **OVERLAY_STYLE_DEFAULTS,
+        **_STYLE_PRESET_LOOK_DEFAULTS,
         "background_color": "#000000",
         "background_opacity": 0.85,
         "original_text_color": "#ffffff",
@@ -142,7 +168,7 @@ BUILT_IN_STYLE_PRESETS = {
         "translated_text_stroke_width_px": 3,
     },
     "Minimalista sin fondo": {
-        **OVERLAY_STYLE_DEFAULTS,
+        **_STYLE_PRESET_LOOK_DEFAULTS,
         "background_opacity": 0.0,
         "original_text_stroke_color": "#000000",
         "original_text_stroke_width_px": 2,
@@ -150,7 +176,7 @@ BUILT_IN_STYLE_PRESETS = {
         "translated_text_stroke_width_px": 2,
     },
     "Neón": {
-        **OVERLAY_STYLE_DEFAULTS,
+        **_STYLE_PRESET_LOOK_DEFAULTS,
         "background_color": "#000000",
         "background_opacity": 0.4,
         "original_text_color": "#39ff14",
@@ -185,11 +211,21 @@ def _save_raw(data: dict):
 
 
 # Resolvers (no constantes planas) porque algunos defaults se calculan en
-# base al hardware/entorno real de la máquina (ej. CUDA) en vez de ser un
-# valor fijo — se evalúan una sola vez, al completar el JSON por primera vez,
-# y de ahí en adelante lo guardado en disco manda.
+# base al hardware/entorno real de la máquina (CUDA, micrófono) en vez de ser
+# un valor fijo — se evalúan una sola vez, al completar el JSON por primera
+# vez, y de ahí en adelante lo guardado en disco manda.
+#
+# audio_input_device_name: NO hay un nombre de dispositivo fijo de fábrica
+# (ver el comentario en config/settings.py) — se resuelve al default de
+# entrada del sistema operativo en el momento de instalar, igual que
+# cuda_acceleration_enabled resuelve is_nvidia_gpu_available() en vez de un
+# bool fijo. "" (nunca coincide con ningún dispositivo real) es el
+# fallback solo para el caso límite en que el sistema no reporte ningún
+# dispositivo de entrada por defecto — ese caso ya lo maneja
+# resolve_input_device_candidates_or_default en tiempo de arranque del
+# pipeline, no hace falta resolverlo acá.
 _TOP_LEVEL_DEFAULT_RESOLVERS = {
-    "audio_input_device_name": lambda: DEFAULT_AUDIO_INPUT_DEVICE_NAME,
+    "audio_input_device_name": lambda: get_default_input_device_name() or "",
     "cuda_acceleration_enabled": is_nvidia_gpu_available,
     "translation_direction": lambda: _DEFAULT_TRANSLATION_DIRECTION,
 }
@@ -311,12 +347,17 @@ def is_built_in_style_preset(name: str) -> bool:
 
 
 def save_overlay_style_preset(name: str):
-    """Guarda el overlay_style ACTUAL bajo `name`. Se guarda en memoria como
-    el resto de los setters de este módulo — no queda en disco hasta el
-    próximo save_user_config()."""
+    """Guarda el LOOK actual (ver STYLE_PRESET_PRESERVED_KEYS — nunca
+    tamaño/tipografía) bajo `name`. Se guarda en memoria como el resto de
+    los setters de este módulo — no queda en disco hasta el próximo
+    save_user_config()."""
     if is_built_in_style_preset(name):
         raise ValueError(f"'{name}' es un preset de fábrica y no se puede sobrescribir.")
-    _user_config.setdefault("overlay_style_presets", {})[name] = dict(_user_config["overlay_style"])
+    current_style = _user_config["overlay_style"]
+    look_only_snapshot = {
+        key: value for key, value in current_style.items() if key not in STYLE_PRESET_PRESERVED_KEYS
+    }
+    _user_config.setdefault("overlay_style_presets", {})[name] = look_only_snapshot
     logger.info(f"Preset de estilo guardado: '{name}'")
 
 
@@ -329,16 +370,24 @@ def delete_overlay_style_preset(name: str):
 
 def apply_overlay_style_preset(name: str) -> dict:
     """
-    Reemplaza el overlay_style actual por el del preset `name`, mutando el
-    dict EN VEZ de reemplazarlo — ConfigWindow._overlay_style y el
-    OverlayServer del PipelineController guardan una referencia directa a
-    este mismo dict (ver get_overlay_style, que ya devuelve la referencia
-    viva en vez de una copia), así que reemplazar el objeto rompería esa
-    referencia compartida.
+    Aplica el LOOK del preset `name` (color, fondo, contorno, animación)
+    sobre el overlay_style actual, mutando el dict EN VEZ de reemplazarlo —
+    ConfigWindow._overlay_style y el OverlayServer del PipelineController
+    guardan una referencia directa a este mismo dict (ver get_overlay_style,
+    que ya devuelve la referencia viva en vez de una copia), así que
+    reemplazar el objeto rompería esa referencia compartida.
 
-    Rellena con OVERLAY_STYLE_DEFAULTS cualquier clave que el preset no
-    tenga (ej. un preset guardado antes de agregar una propiedad nueva),
-    mismo criterio defensivo que _ensure_defaults_persisted.
+    Las claves en STYLE_PRESET_PRESERVED_KEYS (ancho/alto/tipografía de cada
+    zona de texto) NUNCA se tocan, sin importar lo que traiga el preset: son
+    una personalización del usuario para su lienzo de OBS, independiente del
+    look elegido — antes de este comportamiento, elegir cualquier preset
+    pisaba también esos valores con el default de fábrica, "desconfigurando"
+    el tamaño/posición que el usuario ya había ajustado.
+
+    Para cualquier otra clave, rellena con OVERLAY_STYLE_DEFAULTS si el
+    preset no la tiene (ej. un preset guardado antes de agregar una
+    propiedad de look nueva), mismo criterio defensivo que
+    _ensure_defaults_persisted.
     """
     presets = get_overlay_style_presets()
     if name not in presets:
@@ -346,8 +395,9 @@ def apply_overlay_style_preset(name: str) -> dict:
 
     preset_values = presets[name]
     overlay_style = _user_config["overlay_style"]
-    overlay_style.clear()
     for key, default_value in OVERLAY_STYLE_DEFAULTS.items():
+        if key in STYLE_PRESET_PRESERVED_KEYS:
+            continue
         overlay_style[key] = preset_values.get(key, default_value)
     return overlay_style
 

@@ -106,11 +106,22 @@ def test_cannot_save_preset_with_built_in_name(isolated_config):
 
 
 def test_save_and_list_custom_preset(isolated_config):
-    user_config.set_overlay_style_value("original_font_size_px", 99)
+    user_config.set_overlay_style_value("background_color", "#123456")
     user_config.save_overlay_style_preset("Mi preset")
 
     presets = user_config.get_overlay_style_presets()
-    assert presets["Mi preset"]["original_font_size_px"] == 99
+    assert presets["Mi preset"]["background_color"] == "#123456"
+
+
+def test_save_preset_excludes_preserved_layout_keys(isolated_config):
+    # ver STYLE_PRESET_PRESERVED_KEYS: un preset es solo "look", nunca debe
+    # guardar (ni por lo tanto poder pisar después) tamaño/tipografía.
+    user_config.set_overlay_style_value("original_font_size_px", 99)
+    user_config.save_overlay_style_preset("Mi preset")
+
+    saved_preset = user_config.get_overlay_style_presets()["Mi preset"]
+    for preserved_key in user_config.STYLE_PRESET_PRESERVED_KEYS:
+        assert preserved_key not in saved_preset
 
 
 def test_delete_custom_preset(isolated_config):
@@ -140,6 +151,25 @@ def test_apply_preset_mutates_same_dict_instance(isolated_config):
 
     assert style_reference is user_config.get_overlay_style()
     assert style_reference["original_text_color"] == "#39ff14"
+
+
+def test_apply_preset_preserves_user_custom_size_and_font(isolated_config):
+    # Bug reportado: elegir un preset pisaba también el ancho/alto/fuente
+    # que el usuario ya había ajustado a mano para su lienzo de OBS.
+    user_config.set_overlay_style_value("original_width_px", 1234)
+    user_config.set_overlay_style_value("original_height_px", 111)
+    user_config.set_overlay_style_value("original_font_family", "Comic Sans MS")
+    user_config.set_overlay_style_value("original_font_size_px", 77)
+
+    user_config.apply_overlay_style_preset("Neón")
+
+    style = user_config.get_overlay_style()
+    assert style["original_width_px"] == 1234
+    assert style["original_height_px"] == 111
+    assert style["original_font_family"] == "Comic Sans MS"
+    assert style["original_font_size_px"] == 77
+    # el look sí cambió: confirma que el preset se aplicó de verdad
+    assert style["original_text_color"] == "#39ff14"
 
 
 def test_apply_preset_fills_missing_keys_with_defaults(isolated_config):

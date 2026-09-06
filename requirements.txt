@@ -2,18 +2,24 @@
 # propósito: se descargan solas la primera vez que se activa "Usar
 # aceleración CUDA" — ver src/startup/cuda_runtime_downloader.py.
 faster-whisper>=1.0.0
-# Pin explícito aunque sea dependencia transitiva de faster-whisper/argostranslate
-# (que solo exigen ctranslate2>=4.0,<5): 4.6.2 es la primera versión consciente
-# de GPUs Blackwell (RTX 50xx, compute capability sm120) — antes de esa versión
-# el fallback a compute_type "float16" en src/speech/speech_transcriber.py
-# (ver gpu_supports_int8_compute en src/startup/cuda_availability.py) no tiene
-# garantía de evitar el problema real. Sin este piso, un pip install en otra
-# máquina/momento podría resolver una ctranslate2 más vieja sin avisar.
-ctranslate2>=4.6.2
+# Pin EXACTO (no piso) aunque sea dependencia transitiva de
+# faster-whisper/argostranslate (que solo exigen ctranslate2>=4.0,<5): esta
+# es la versión con la que se probó en vivo el pipeline completo de
+# transcripción + traducción (ver src/translation/translator.py — el fix de
+# forzar compute_type="float32" en Argos Translate para evitar el bug de
+# loops de repetición en CPU, y gpu_supports_int8_compute en
+# src/startup/cuda_availability.py para Blackwell). Un piso (">=") dejaría
+# que un pip install en otra máquina/momento resuelva una versión distinta
+# — más nueva o más vieja — nunca probada con este pipeline; el pin exacto
+# asegura que lo que se instala es exactamente lo que se validó.
+ctranslate2==4.8.1
 torch>=2.13.0
 torchaudio>=2.1.0
 sounddevice>=0.4.6
 numpy>=1.24.0
 websockets>=17.1
-argostranslate>=1.9.0
+# Pin EXACTO: misma versión con la que se probó en vivo el fix de
+# compute_type="float32" (ver src/translation/translator.py) contra el bug
+# de loops de repetición de CTranslate2 en CPU.
+argostranslate==1.11.0
 customtkinter>=6.0.0
