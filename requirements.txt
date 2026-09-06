@@ -14,7 +14,7 @@ faster-whisper>=1.0.0
 # asegura que lo que se instala es exactamente lo que se validó.
 ctranslate2==4.8.1
 torch>=2.13.0
-torchaudio>=2.1.0
+torchaudio>=2.11.0
 sounddevice>=0.4.6
 numpy>=1.24.0
 websockets>=17.1
