@@ -16,18 +16,23 @@ AUDIO_FRAME_SAMPLES = 512             # Tamaño de frame esperado por Silero VAD
 # prioriza normalmente la entrada WASAPI entre esos duplicados, excluyendo
 # siempre la entrada WDM-KS (que bloquea el dispositivo en modo exclusivo
 # para otras apps, como OBS, sin importar la config de exclusividad que se
-# le pida — nunca es una opción elegible, ver device_resolver.py). Alcanza
-# con que este substring coincida con parte del nombre reportado por
-# list_audio_devices.py; no hace falta el nombre exacto.
+# le pida — nunca es una opción elegible, ver device_resolver.py).
 #
-# Este valor es solo el default de fábrica. Una vez que el usuario elige un
-# dispositivo desde el selector de la GUI, ese valor se guarda en
-# user_config.json (ver config/user_config.py) y pasa a tener prioridad —
-# stream_capture.py lee siempre desde ahí, no desde esta constante. Si el
-# dispositivo elegido deja de estar disponible (se desconectó), se cae
-# automáticamente al dispositivo de entrada por defecto del sistema
-# operativo (ver device_resolver.resolve_input_device_candidates_or_default).
-AUDIO_INPUT_DEVICE_NAME = "DualSense Wireless Controller"
+# NO hay una constante acá con el nombre de un dispositivo puntual a
+# propósito: esta app se distribuye a usuarios con hardware desconocido, así
+# que el default de fábrica NO puede ser el micrófono personal de quien
+# desarrolla (fijar acá algo como el nombre de un control/auricular puntual
+# rompería la detección de micrófono para cualquiera que no tenga
+# exactamente ese hardware). El default real se resuelve dinámicamente
+# contra el dispositivo de entrada que Windows tiene como predeterminado del
+# sistema (ver config/user_config.py, resolver de "audio_input_device_name",
+# y device_resolver.get_default_input_device_name) — mismo patrón que ya usa
+# cuda_acceleration_enabled con is_nvidia_gpu_available, en vez de un valor
+# fijo. Una vez que el usuario elige un dispositivo desde el selector de la
+# GUI, ese valor se guarda en user_config.json y pasa a tener prioridad de
+# ahí en adelante; si el dispositivo elegido deja de estar disponible (se
+# desconectó), se cae automáticamente al default del sistema operativo (ver
+# device_resolver.resolve_input_device_candidates_or_default).
 
 # Overrides manuales de host API, por dispositivo. Normalmente no hace falta
 # tocar esto: el resolver ya prioriza WASAPI, que da la mejor calidad de
@@ -103,6 +108,20 @@ WHISPER_AVG_LOGPROB_THRESHOLD = -1.0
 #     alucinación). Mismo umbral que usa Whisper de OpenAI internamente.
 WHISPER_COMPRESSION_RATIO_THRESHOLD = 2.4
 
+# Mitigación de alucinaciones en forma de loop de repetición (ej. la misma
+# palabra o frase corta encadenada varias veces seguidas), un patrón que
+# aparece sobre todo en utterances cortas con poco contexto de audio. El
+# compression_ratio de arriba ya descarta el caso extremo (todo el segmento
+# es puro loop), pero no alcanza a frenar el loop mientras se está generando
+# si el resto del segmento es válido. repetition_penalty > 1.0 penaliza
+# repetir tokens ya generados; no_repeat_ngram_size > 0 prohíbe directamente
+# repetir cualquier n-grama de ese tamaño. Ambos son parámetros nativos de
+# faster-whisper (ver WhisperModel.transcribe) — 1.0 y 0 son sus valores por
+# defecto (sin efecto), así que estos valores son un cambio de comportamiento
+# real, no solo documentación.
+WHISPER_REPETITION_PENALTY = 1.1
+WHISPER_NO_REPEAT_NGRAM_SIZE = 3
+
 # Energía mínima (RMS, sobre audio float32 en [-1.0, 1.0]) para siquiera
 # intentar transcribir una utterance. Si Silero VAD marca frames como "voz"
 # por error (ruido de fondo, soplido del micrófono, etc.) pero el audio es
@@ -150,7 +169,11 @@ KNOWN_HALLUCINATION_PHRASES = [
 # lo que se venía mostrando como parcial.
 #
 # Poner en False para volver al comportamiento anterior (solo texto final).
-PARTIAL_TRANSCRIPTION_ENABLED = True
+# Desactivado: el texto tentativo parpadeando/cambiando en el overlay se
+# sentía demasiado raro para mostrar en vivo (el modelo liviano usado para
+# parciales -ver PARTIAL_WHISPER_MODEL_NAME- es bastante menos preciso que
+# el final, así que el parcial cambia de forma visible mientras se corrige).
+PARTIAL_TRANSCRIPTION_ENABLED = False
 
 # Cada cuántos ms (de audio con voz acumulada) se dispara un nuevo parcial.
 # Más bajo = feedback más inmediato pero más pasadas de Whisper por frase
@@ -197,6 +220,16 @@ TRANSLATION_ENABLED = True
 # arriba. Paquetes de idioma disponibles en
 # https://www.argosopentech.com/argospm/index/
 TRANSLATION_TARGET_LANGUAGE = "en"
+
+# Argos Translate (a diferencia de faster-whisper) no expone parámetros de
+# decodificación como repetition_penalty a través de su API de alto nivel
+# (argostranslate.translate.translate) — ver src/translation/translator.py.
+# Cuando el modelo entra en un loop de repetición (ej. "mainstreammainstream"
+# encadenado), no hay forma de evitarlo desde los parámetros de generación;
+# se detecta después con el mismo criterio de compression_ratio que usa
+# Whisper (ver WHISPER_COMPRESSION_RATIO_THRESHOLD) y se descarta esa
+# traducción puntual en vez de mandar basura al overlay.
+TRANSLATION_COMPRESSION_RATIO_THRESHOLD = 2.4
 
 # Qué se muestra en el overlay:
 #   "original_only"     -> solo el texto transcrito, sin traducir (como antes)

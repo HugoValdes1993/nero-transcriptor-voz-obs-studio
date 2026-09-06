@@ -26,6 +26,8 @@ from config.settings import (
     WHISPER_NO_SPEECH_PROB_THRESHOLD,
     WHISPER_AVG_LOGPROB_THRESHOLD,
     WHISPER_COMPRESSION_RATIO_THRESHOLD,
+    WHISPER_REPETITION_PENALTY,
+    WHISPER_NO_REPEAT_NGRAM_SIZE,
     MIN_UTTERANCE_RMS_ENERGY,
 )
 from config.user_config import get_whisper_device, get_whisper_source_language
@@ -164,6 +166,8 @@ class SpeechTranscriber:
             beam_size=self.beam_size,
             vad_filter=WHISPER_VAD_FILTER,
             condition_on_previous_text=self.condition_on_previous_text,
+            repetition_penalty=WHISPER_REPETITION_PENALTY,
+            no_repeat_ngram_size=WHISPER_NO_REPEAT_NGRAM_SIZE,
         )
 
         accepted_segment_texts = []

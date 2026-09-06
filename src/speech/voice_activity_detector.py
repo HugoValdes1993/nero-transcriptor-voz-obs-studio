@@ -2,6 +2,19 @@
 Wrapper sobre Silero VAD para determinar, frame por frame, si el audio capturado
 contiene voz. Se usa para segmentar utterances antes de enviarlas a Whisper,
 evitando alucinaciones del modelo durante silencios o ruido de fondo.
+
+El modelo de Silero es una RNN (LSTMCell, ver VADDecoderRNNJIT) que mantiene
+estado interno ENTRE llamadas — no es sin memoria frame a frame. La propia
+referencia oficial de Silero (utils.VADIterator, la clase de ejemplo que
+provee el repo del modelo) resetea ese estado con model.reset_states() cada
+vez que arranca un ciclo nuevo de detección, precisamente porque dejarlo
+acumular indefinidamente hace que las probabilidades de voz se degraden con
+el tiempo (típico en sesiones largas, ej. un stream de horas): la app
+empieza escuchando bien y con el correr de los minutos necesita voz cada vez
+más fuerte/clara para seguir detectándose como voz. Por eso reset() existe
+acá y TranscriptionPipeline la llama al cerrarse cada utterance (ver
+_process_frame) — el mismo punto en el que UtteranceSegmenter también
+resetea su propio estado.
 """
 
 import torch
@@ -35,3 +48,9 @@ class VoiceActivityDetector:
                 audio_tensor, AUDIO_SAMPLE_RATE_HZ
             ).item()
         return speech_probability >= VAD_SPEECH_PROBABILITY_THRESHOLD
+
+    def reset(self):
+        """Limpia el estado interno de la RNN (ver docstring del módulo).
+        Se llama al cerrar cada utterance, para que el silencio/voz de la
+        frase siguiente arranque sin arrastrar contexto de la anterior."""
+        self.silero_model.reset_states()
